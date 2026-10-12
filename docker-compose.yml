@@ -1,0 +1,176 @@
+version: "3.8"
+
+networks:
+  mds_net:
+    driver: bridge
+
+services:
+  postgres:
+    image: postgres:16
+    container_name: mds-standalone-postgres
+    networks:
+      - mds_net
+    environment:
+      POSTGRES_USER: ${POSTGRES_USER:-postgres}
+      POSTGRES_PASSWORD: ${POSTGRES_PASSWORD:-password}
+      POSTGRES_DB: ${POSTGRES_DB:-master_data}
+    ports:
+      - "${POSTGRES_PORT:-5434}:5432"
+    volumes:
+      - mds_pgdata:/var/lib/postgresql/data
+    healthcheck:
+      test: ["CMD-SHELL", "pg_isready -U postgres -d master_data"]
+      interval: 5s
+      timeout: 5s
+      retries: 10
+      start_period: 10s
+    restart: unless-stopped
+
+  minio:
+    image: minio/minio:latest
+    container_name: mds-standalone-minio
+    networks:
+      - mds_net
+    command: server /data --console-address ":9001"
+    environment:
+      MINIO_ROOT_USER: ${MINIO_ROOT_USER:-minioadmin}
+      MINIO_ROOT_PASSWORD: ${MINIO_ROOT_PASSWORD:-minioadmin}
+    ports:
+      - "${MINIO_API_PORT:-9010}:9000"
+      - "${MINIO_CONSOLE_PORT:-9011}:9001"
+    volumes:
+      - mds_miniodata:/data
+    restart: unless-stopped
+
+  minio-init:
+    image: minio/mc:latest
+    container_name: mds-standalone-minio-init
+    networks:
+      - mds_net
+    depends_on:
+      - minio
+    entrypoint: >
+      /bin/sh -c "
+      sleep 3;
+      /usr/bin/mc alias set local http://mds-standalone-minio:9000 minioadmin minioadmin;
+      /usr/bin/mc mb --ignore-existing local/openg2p-geo;
+      /usr/bin/mc anonymous set download local/openg2p-geo;
+      echo 'MinIO openg2p-geo bucket initialized successfully';
+      exit 0;
+      "
+    restart: "no"
+
+  master-data-api:
+    image: openg2p/master-data-api:develop
+    container_name: mds-standalone-api
+    networks:
+      - mds_net
+    extra_hosts:
+      - "host.docker.internal:host-gateway"
+    depends_on:
+      postgres:
+        condition: service_healthy
+      minio:
+        condition: service_started
+    environment:
+      MASTER_DATA_API_HOST: "0.0.0.0"
+      MASTER_DATA_API_PORT: 8000
+      MASTER_DATA_API_NO_OF_WORKERS: 2
+      MASTER_DATA_API_OPENAPI_ROOT_PATH: /
+      MASTER_DATA_API_WORKER_TYPE: gunicorn
+      MASTER_DATA_API_DB_DRIVER: postgresql+asyncpg
+      MASTER_DATA_API_DB_HOSTNAME: mds-standalone-postgres
+      MASTER_DATA_API_DB_PORT: 5432
+      MASTER_DATA_API_DB_USERNAME: ${POSTGRES_USER:-postgres}
+      MASTER_DATA_API_DB_PASSWORD: ${POSTGRES_PASSWORD:-password}
+      MASTER_DATA_API_DB_DBNAME: ${POSTGRES_DB:-master_data}
+      MASTER_DATA_API_AUTH_ENABLED: "false"
+      MASTER_DATA_API_CSRF_ENABLED: "false"
+      MASTER_DATA_API_AUTH_REDIS_URL: "redis://host.docker.internal:6379/0"
+      COMMON_AUTH_REDIS_URL: "redis://host.docker.internal:6379/0"
+      MASTER_DATA_API_AUTH_PROVIDER_API_URL: "http://localhost:8020"
+      MASTER_DATA_API_KEYCLOAK_CLIENT_ID: "iam-staff-portal"
+      COMMON_AUTH_PROVIDER_API_URL: "http://localhost:8020"
+      COMMON_KEYCLOAK_CLIENT_ID: "iam-staff-portal"
+      COMMON_AUTH_VERIFY_SSL: "false"
+      MASTER_DATA_API_AUTH_VERIFY_SSL: "false"
+      MASTER_DATA_API_PUBLIC_CATALOGUE_ENABLED: "true"
+      MASTER_DATA_API_CATALOGUE_APPROVAL_MODE: permission
+      MASTER_DATA_API_CATALOGUE_COUNTRY: ETH
+      MASTER_DATA_API_BOUNDARY_S3_ENDPOINT: "http://mds-standalone-minio:9000"
+      MASTER_DATA_API_BOUNDARY_S3_BUCKET: openg2p-geo
+      MASTER_DATA_API_BOUNDARY_S3_ACCESS_KEY: minioadmin
+      MASTER_DATA_API_BOUNDARY_S3_SECRET_KEY: minioadmin
+    command:
+      - /bin/sh
+      - -c
+      - |
+        python3 -c "
+        import socket, threading, time
+        def fwd(src, dst):
+            s = socket.socket()
+            s.setsockopt(socket.SOL_SOCKET, socket.SO_REUSEADDR, 1)
+            s.bind(('127.0.0.1', src))
+            s.listen(10)
+            while True:
+                c, _ = s.accept()
+                t = socket.socket()
+                try:
+                    t.connect(('host.docker.internal', dst))
+                    def p(a, b):
+                        try:
+                            while d := a.recv(4096): b.sendall(d)
+                        except: pass
+                        finally:
+                            try: a.close(); b.close()
+                            except: pass
+                    threading.Thread(target=p, args=(c, t), daemon=True).start()
+                    threading.Thread(target=p, args=(t, c), daemon=True).start()
+                except:
+                    c.close()
+        threading.Thread(target=fwd, args=(8080, 8080), daemon=True).start()
+        threading.Thread(target=fwd, args=(8020, 8020), daemon=True).start()
+        while True: time.sleep(3600)
+        " &
+        python3 -m openg2p_gen2_master_data.main migrate
+        exec gunicorn "openg2p_gen2_master_data.main:app" --workers 2 --worker-class uvicorn.workers.UvicornWorker --bind 0.0.0.0:8000
+    ports:
+      - "${MASTER_DATA_API_PORT:-8044}:8000"
+    healthcheck:
+      test: ["CMD-SHELL", "python -c \"import urllib.request; urllib.request.urlopen('http://127.0.0.1:8000/ping')\""]
+      interval: 10s
+      timeout: 5s
+      retries: 12
+      start_period: 40s
+    restart: unless-stopped
+
+  master-data-ui:
+    image: openg2p/master-data-ui:develop
+    container_name: mds-standalone-ui
+    networks:
+      - mds_net
+    extra_hosts:
+      - "host.docker.internal:host-gateway"
+    depends_on:
+      master-data-api:
+        condition: service_healthy
+    command: >
+      sh -c "
+      node -e \"const net=require('net');net.createServer(c=>c.pipe(net.connect(8020,'host.docker.internal')).pipe(c)).listen(8020);\" &
+      exec node server.js
+      "
+    environment:
+      PORT: "3000"
+      HOSTNAME: "0.0.0.0"
+      BACKEND_URL: "http://master-data-api:8000"
+      IAM_URL: "http://localhost:8020"
+      APPLICATION_MNEMONIC: "farmer-registry-staff-portal"
+      LOGIN_PROVIDER_ID: "1"
+      COOKIE_DOMAIN: "localhost"
+    ports:
+      - "${MASTER_DATA_UI_PORT:-3005}:3000"
+    restart: unless-stopped
+
+volumes:
+  mds_pgdata:
+  mds_miniodata:
