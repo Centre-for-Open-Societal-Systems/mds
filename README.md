@@ -76,14 +76,8 @@ docker cp add_geography_to_catalogs.py mds-standalone-api:/tmp/add_geography_to_
 docker exec mds-standalone-api python /tmp/add_geography_to_catalogs.py
 ```
 
-### Apply Custom Sidebar Navigation
-```bash
-docker cp customize_sidebar.js mds-standalone-ui:/app/customize_sidebar.js
-docker cp reorder_sidebar.js mds-standalone-ui:/app/reorder_sidebar.js
-docker exec mds-standalone-ui node /app/customize_sidebar.js
-docker exec mds-standalone-ui node /app/reorder_sidebar.js
-docker restart mds-standalone-ui
-```
+### Custom Sidebar Navigation & Standalone Mode
+The standalone auth bypass (`patch_ui.js`, `patch_api.py`, `mock_iam.js`) and customized sidebar navigation (`customize_sidebar.js`, `reorder_sidebar.js`) are mounted automatically into the containers and applied on every container start. No manual copying or container restarting is required.
 
 ---
 

@@ -101,37 +101,13 @@ services:
       MASTER_DATA_API_BOUNDARY_S3_BUCKET: openg2p-geo
       MASTER_DATA_API_BOUNDARY_S3_ACCESS_KEY: minioadmin
       MASTER_DATA_API_BOUNDARY_S3_SECRET_KEY: minioadmin
+    volumes:
+      - ./patch_api.py:/app/patch_api.py:ro
     command:
       - /bin/sh
       - -c
       - |
-        python3 -c "
-        import socket, threading, time
-        def fwd(src, dst):
-            s = socket.socket()
-            s.setsockopt(socket.SOL_SOCKET, socket.SO_REUSEADDR, 1)
-            s.bind(('127.0.0.1', src))
-            s.listen(10)
-            while True:
-                c, _ = s.accept()
-                t = socket.socket()
-                try:
-                    t.connect(('host.docker.internal', dst))
-                    def p(a, b):
-                        try:
-                            while d := a.recv(4096): b.sendall(d)
-                        except: pass
-                        finally:
-                            try: a.close(); b.close()
-                            except: pass
-                    threading.Thread(target=p, args=(c, t), daemon=True).start()
-                    threading.Thread(target=p, args=(t, c), daemon=True).start()
-                except:
-                    c.close()
-        threading.Thread(target=fwd, args=(8080, 8080), daemon=True).start()
-        threading.Thread(target=fwd, args=(8020, 8020), daemon=True).start()
-        while True: time.sleep(3600)
-        " &
+        python3 /app/patch_api.py
         python3 -m openg2p_gen2_master_data.main migrate
         exec gunicorn "openg2p_gen2_master_data.main:app" --workers 2 --worker-class uvicorn.workers.UvicornWorker --bind 0.0.0.0:8000
     ports:
@@ -149,14 +125,20 @@ services:
     container_name: mds-standalone-ui
     networks:
       - mds_net
-    extra_hosts:
-      - "host.docker.internal:host-gateway"
     depends_on:
       master-data-api:
         condition: service_healthy
+    volumes:
+      - ./mock_iam.js:/app/mock_iam.js:ro
+      - ./patch_ui.js:/app/patch_ui.js:ro
+      - ./customize_sidebar.js:/app/customize_sidebar.js:ro
+      - ./reorder_sidebar.js:/app/reorder_sidebar.js:ro
     command: >
       sh -c "
-      node -e \"const net=require('net');net.createServer(c=>{const t=net.connect(8020,'host.docker.internal');t.on('error',()=>c.destroy());c.on('error',()=>t.destroy());c.pipe(t).pipe(c);}).on('error',()=>{}).listen(8020);\" &
+      node /app/patch_ui.js;
+      node /app/customize_sidebar.js;
+      node /app/reorder_sidebar.js;
+      node /app/mock_iam.js &
       exec node server.js
       "
     environment:
