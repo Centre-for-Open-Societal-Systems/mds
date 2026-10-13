@@ -156,7 +156,7 @@ services:
         condition: service_healthy
     command: >
       sh -c "
-      node -e \"const net=require('net');net.createServer(c=>c.pipe(net.connect(8020,'host.docker.internal')).pipe(c)).listen(8020);\" &
+      node -e \"const net=require('net');net.createServer(c=>{const t=net.connect(8020,'host.docker.internal');t.on('error',()=>c.destroy());c.on('error',()=>t.destroy());c.pipe(t).pipe(c);}).on('error',()=>{}).listen(8020);\" &
       exec node server.js
       "
     environment:
@@ -165,7 +165,7 @@ services:
       BACKEND_URL: "http://master-data-api:8000"
       IAM_URL: "http://localhost:8020"
       APPLICATION_MNEMONIC: "farmer-registry-staff-portal"
-      LOGIN_PROVIDER_ID: "1"
+      LOGIN_PROVIDER_ID: ""
       COOKIE_DOMAIN: "localhost"
     ports:
       - "${MASTER_DATA_UI_PORT:-3005}:3000"
