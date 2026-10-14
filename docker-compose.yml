@@ -133,11 +133,9 @@ services:
     volumes:
       - ./docker_proxy.js:/app/docker_proxy.js:ro
       - ./customize_sidebar.js:/app/customize_sidebar.js:ro
-      - ./reorder_sidebar.js:/app/reorder_sidebar.js:ro
     command: >
       sh -c "
       node /app/customize_sidebar.js;
-      node /app/reorder_sidebar.js;
       node /app/docker_proxy.js &
       exec node server.js
       "
