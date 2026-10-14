@@ -2,9 +2,9 @@
 
 A complete, production-ready standalone deployment of **OpenG2P Master Data Service (MDS)** featuring:
 * **Master Data Core API** (FastAPI / Gunicorn on port `8044`)
-* **Master Data Catalogue UI** (Next.js with custom domain navigation on port `3005`)
-* **PostgreSQL 16** with pre-seeded administrative geography and client reference catalogs
-* **MinIO Object Store** (S3 compatible for GeoJSON boundary polygons)
+* **Master Data Catalogue UI** (Next.js with customized domain navigation on port `3005`)
+* **PostgreSQL 16** pre-configured for administrative geography and client reference catalogs
+* **MinIO Object Store** (S3 compatible for GeoJSON administrative boundaries)
 * **Pre-configured Reference Catalogs**:
   * 🌾 **Crop Domain**: Crop Catalog (129), Crop Categories (7), Crop Varieties (902), Ecological Zones (3)
   * 🐄 **Livestock Domain**: Livestock Species (5), Livestock Breeds (94), Populations (40), Genders (4), Production Types (13), Body Conditions (5), Record Statuses (6)
@@ -13,83 +13,257 @@ A complete, production-ready standalone deployment of **OpenG2P Master Data Serv
 
 ---
 
-## Architecture Overview
+## 1. Architecture Overview
+
+### Standalone vs. Full OpenG2P Stack
+In the full OpenG2P deployment, MDS depends on an external Identity & Access Management (IAM) suite, Keycloak, Redis sessions, and multiple auxiliary services. In this **Standalone** distribution, MDS is decoupled into a self-sufficient cluster:
 
 ```
-+-----------------------------------------------------------+
-|               Next.js Web UI (Port 3005)                  |
-|    - Crops, Livestock, Seeds, Geography, All Catalogs     |
-+-----------------------------+-----------------------------+
-                              |
-                              v
-+-----------------------------------------------------------+
-|               FastAPI MDS API (Port 8044)                 |
-|       - Public & Protected Catalogues, Drafts, Geo        |
-+-------------------+-------------------+-------------------+
-                    |                   |
-                    v                   v
-+-----------------------+   +-------------------------------+
-| PostgreSQL (Port 5434)|   | MinIO S3 Storage (Port 9010)  |
-| - master_data DB      |   | - openg2p-geo bucket          |
-+-----------------------+   +-------------------------------+
++---------------------------------------------------------------------------------+
+|                                 Next.js Web UI                                  |
+|                         (Port 3005 -> Container 3000)                          |
+|     - Custom Sidebar: Crops, Livestock, Seeds, Geography, All Catalogs          |
+|     - Embedded Mock IAM Service (Port 8020) for standalone administrator access  |
++----------------------------------------+----------------------------------------+
+                                         |
+                                         v
++---------------------------------------------------------------------------------+
+|                                FastAPI Core API                                 |
+|                         (Port 8044 -> Container 8000)                          |
+|     - Master Data Engine, Draft Versions, Maker-Checker Workflows, DCAT, Geo    |
+|     - Autonomous Standalone Auth Middleware (Full Permissions Admin Mode)      |
++-----------------------------------+---------------------------------------------+
+                                    |
+                    +---------------+---------------+
+                    |                               |
+                    v                               v
++---------------------------------------+   +-------------------------------------+
+|        PostgreSQL 16 Database         |   |          MinIO Object Store         |
+|     (Port 5434 -> Container 5432)     |   |    (API: 9010 / Console: 9011)      |
+|     - Schema: master_data             |   |    - Bucket: openg2p-geo            |
+|     - Tables: catalogs, versions, geo |   |    - GeoJSON boundary feature sets  |
++---------------------------------------+   +-------------------------------------+
 ```
 
 ---
 
-## Quick Start
+## 2. Master Data Workflow & Governance
 
-### 1. Prerequisites
-* Docker Engine 24+ & Docker Compose v2+
-* Python 3.10+ (optional, for local import scripts)
+MDS implements strict **Maker-Checker (Four-Eyes Principle)** governance to ensure data integrity across all consuming registries:
 
-### 2. Start Services
+```
+[ Active Version v1 ] (Serving Live Consumers)
+         │
+         ▼
+[ Create Draft v2 ] ──► (Maker: Edits, Adds, Retires entries in isolation)
+         │
+         ▼
+[ Submit for Approval ]
+         │
+         ▼
+[ Review & Diff ] ──► (Checker: Side-by-side comparison of changes)
+         │
+    ┌────┴────────────┐
+    ▼                 ▼
+[ Approved ]     [ Rejected ] ──► Returns to Draft
+    │
+    ▼
+[ Published & Immutable ] ──► Version v2 is locked with timestamp and takes effect
+```
+
+1. **Active Published Version (`v1`)**: External services and staff portals query immutable published versions.
+2. **Drafting (Maker)**: Any editor can create a new draft (e.g., `v2`). Modifications do not impact live consumers.
+3. **Submission**: Once revisions are complete, the maker submits the draft for review.
+4. **Approval (Checker)**: A separate user with publish permissions inspects changes using the side-by-side **Compare versions** tool and approves or rejects the draft.
+5. **Publishing**: The version is assigned an effective date and locked permanently.
+
+---
+
+## 3. Quick Start
+
+### Prerequisites
+* Docker Engine 24.0+
+* Docker Compose v2.20+
+
+### Starting Services
+Run from the root of this repository:
 ```bash
 docker compose up -d
 ```
 
-Verify containers are running and healthy:
+### Checking Status
 ```bash
 docker compose ps
 ```
+All containers (`mds-standalone-api`, `mds-standalone-ui`, `mds-standalone-postgres`, `mds-standalone-minio`) should report `Up` and `healthy`.
 
-### 3. Service Endpoints
-* **Web Portal (UI)**: [http://localhost:3005](http://localhost:3005)
-* **Master Data API**: [http://localhost:8044](http://localhost:8044)
-* **API Swagger Docs**: [http://localhost:8044/docs](http://localhost:8044/docs)
-* **MinIO Console**: [http://localhost:9011](http://localhost:9011) (`minioadmin` / `minioadmin`)
+### Service Endpoints
+| Component | Endpoint | Credentials / Purpose |
+|---|---|---|
+| **Web Portal (UI)** | [http://localhost:3005](http://localhost:3005) | Main Catalogue UI (Auto-logged in as Admin) |
+| **Master Data API** | [http://localhost:8044](http://localhost:8044) | Core REST API |
+| **API Swagger Docs** | [http://localhost:8044/docs](http://localhost:8044/docs) | Interactive OpenAPI documentation |
+| **MinIO Console** | [http://localhost:9011](http://localhost:9011) | User: `minioadmin` / Pass: `minioadmin` |
+| **MinIO S3 API** | [http://localhost:9010](http://localhost:9010) | GeoJSON boundary storage endpoint |
+| **PostgreSQL** | `localhost:5434` | DB: `master_data`, User: `postgres`, Pass: `password` |
+
+### Stopping Services
+```bash
+docker compose down
+```
 
 ---
 
-## Catalog Import & Data Sync Scripts
+## 4. How Standalone Mode Works (Automated Boot Sequence)
 
-The repository includes automation scripts to populate and synchronize catalogs:
+### Previous Problem on Fresh Starts
+In previous versions, a fresh start would fail with:
+1. **508 Loop Detected**: Visiting `/en` called `/api/me`, which returned `401 Unauthorized` due to a missing IAM cookie. The browser continuously bounced between `/en` and `/api/login`.
+2. **500 Internal Server Error**: `/api/login` and `/api/me` attempted to contact an external OpenG2P IAM service on port `8020`, which does not exist in standalone mode.
+3. **Backend 401**: `master-data-api` enforced Keycloak JWT token validation even when auth was disabled.
 
-### Import All Core Catalogs
+### Automated Solution
+The repository now includes automated startup hooks mounted in `docker-compose.yml`:
+* **`mock_iam.js`**: A lightweight Node HTTP service running on port `8020` inside the UI container. It immediately supplies administrator profiles and permissions for `/auth/get_logged_in_user`, `/user-access/get_application_permissions_for_user`, and redirects authentication requests cleanly.
+* **`patch_ui.js`**: Automatically updates Next.js server auth helpers on startup to allow standalone sessions.
+* **`patch_api.py`**: Automatically configures the FastAPI backend on startup to bypass JWT validation and inject an administrative principal when `MASTER_DATA_API_AUTH_ENABLED=false`.
+* **`customize_sidebar.js` & `reorder_sidebar.js`**: Reorders navigation categories (Crops, Livestock, Seeds, Geography, All Catalogs) dynamically on container boot.
+
+**No manual file copying or container restarts are needed.**
+
+---
+
+## 5. Catalog Data Import Scripts
+
+To populate or re-seed reference catalogs into PostgreSQL:
+
+### Import All Core Catalogs (Crops, Livestock, Seeds)
 ```bash
 docker cp import_all_catalogs.py mds-standalone-api:/tmp/import_all_catalogs.py
 docker exec mds-standalone-api python /tmp/import_all_catalogs.py
 ```
 
-### Import Administrative Geography Catalogs
+### Import Administrative Geography Catalogs (Regions, Zones, Woredas)
 ```bash
 docker cp add_geography_to_catalogs.py mds-standalone-api:/tmp/add_geography_to_catalogs.py
 docker exec mds-standalone-api python /tmp/add_geography_to_catalogs.py
 ```
 
-### Custom Sidebar Navigation & Standalone Mode
-The standalone auth bypass (`patch_ui.js`, `patch_api.py`, `mock_iam.js`) and customized sidebar navigation (`customize_sidebar.js`, `reorder_sidebar.js`) are mounted automatically into the containers and applied on every container start. No manual copying or container restarting is required.
+---
+
+## 6. DevOps Deployment & Infrastructure Guide
+
+This section is prepared for DevOps and Platform Engineers deploying MDS to cloud environments (Kubernetes, AWS ECS, Docker Swarm, or dedicated VMs).
+
+### 6.1 Network & Port Requirements
+Ensure the following ports are open or mapped in your ingress/reverse proxy:
+
+| Internal Port | External/Host Port | Service | Protocol | Exposure |
+|---|---|---|---|---|
+| `3000` | `3005` | `mds-standalone-ui` | HTTP | Public / Ingress |
+| `8000` | `8044` | `mds-standalone-api` | HTTP | Internal or Public via Ingress |
+| `5432` | `5434` | `mds-standalone-postgres` | TCP | Private / Internal VPC only |
+| `9000` | `9010` | `mds-standalone-minio` | HTTP | Private (API access for boundaries) |
+| `9001` | `9011` | `mds-standalone-minio` | HTTP | Admin Only / VPN |
+
+### 6.2 Environment Variables Reference (`.env`)
+Create a `.env` file for environment-specific overrides:
+
+```dotenv
+# --- PostgreSQL Settings ---
+POSTGRES_USER=postgres
+POSTGRES_PASSWORD=secure_production_password
+POSTGRES_DB=master_data
+POSTGRES_PORT=5434
+
+# --- MinIO Object Store Settings ---
+MINIO_ROOT_USER=minioadmin
+MINIO_ROOT_PASSWORD=secure_minio_password
+MINIO_API_PORT=9010
+MINIO_CONSOLE_PORT=9011
+
+# --- Master Data Core API Settings ---
+MASTER_DATA_API_PORT=8044
+MASTER_DATA_API_AUTH_ENABLED=false
+MASTER_DATA_API_CSRF_ENABLED=false
+MASTER_DATA_API_PUBLIC_CATALOGUE_ENABLED=true
+MASTER_DATA_API_CATALOGUE_APPROVAL_MODE=permission
+MASTER_DATA_API_CATALOGUE_COUNTRY=ETH
+
+# --- Master Data UI Settings ---
+MASTER_DATA_UI_PORT=3005
+COOKIE_DOMAIN=localhost
+```
+
+### 6.3 Deployment Modes: Standalone vs. Production IAM
+
+#### Option A: Standalone Mode (Current Default)
+Use this mode for internal, air-gapped, pilot, or staging environments where an external IAM / Keycloak cluster is not desired.
+* Set `MASTER_DATA_API_AUTH_ENABLED=false`.
+* The containers automatically execute `patch_api.py`, `patch_ui.js`, and `mock_iam.js` via the mounts specified in `docker-compose.yml`.
+* Full catalog editing, maker-checker, and publishing work out of the box with zero external dependencies.
+
+#### Option B: Corporate Keycloak / IAM Integration
+When integrating MDS into an existing enterprise single-sign-on (SSO) infrastructure:
+1. In `docker-compose.yml` under `master-data-ui`:
+   * Set `LOGIN_PROVIDER_ID` to your Keycloak Provider ID (e.g., `"1"`).
+   * Set `IAM_URL` to your production IAM service endpoint (e.g., `https://iam.example.gov`).
+   * Set `COOKIE_DOMAIN` to your shared domain (e.g., `.example.gov`).
+2. In `master-data-api`:
+   * Set `MASTER_DATA_API_AUTH_ENABLED=true`.
+   * Set `COMMON_AUTH_PROVIDER_API_URL` and `MASTER_DATA_API_AUTH_PROVIDER_API_URL` to your IAM URL.
+   * Provide Keycloak Client ID (`iam-staff-portal` or your configured client).
+
+### 6.4 Persistent Storage & Volumes
+For production deployments, ensure persistent volume claims (PVCs) or host mounts are backed by resilient storage:
+* **PostgreSQL Volume**: `mds_pgdata` &rarr; `/var/lib/postgresql/data`
+* **MinIO Volume**: `mds_miniodata` &rarr; `/data`
+
+### 6.5 Health Checks & Probes
+Configure your orchestrator (Kubernetes / Docker Compose) with these probes:
+
+* **Master Data Core API**:
+  * Type: HTTP GET
+  * Path: `http://<api-host>:8000/ping`
+  * Expected Status: `200 OK`
+* **Master Data UI**:
+  * Type: HTTP GET
+  * Path: `http://<ui-host>:3000/en`
+  * Expected Status: `200 OK`
+* **PostgreSQL**:
+  * Command: `pg_isready -U postgres -d master_data`
+
+### 6.6 Backup & Disaster Recovery Procedures
+
+#### 1. PostgreSQL Database Backup
+Run a snapshot dump of all catalog definitions, versions, and values:
+```bash
+docker exec -t mds-standalone-postgres pg_dump -U postgres -d master_data -F c -b -v -f /tmp/mds_backup_$(date +%Y%m%d).dump
+docker cp mds-standalone-postgres:/tmp/mds_backup_$(date +%Y%m%d).dump ./
+```
+
+To restore:
+```bash
+docker cp ./mds_backup_YYYYMMDD.dump mds-standalone-postgres:/tmp/
+docker exec -t mds-standalone-postgres pg_restore -U postgres -d master_data -c -v /tmp/mds_backup_YYYYMMDD.dump
+```
+
+#### 2. MinIO S3 Boundary Data Backup
+Mirror the GeoJSON boundary bucket to local storage or an external S3 bucket:
+```bash
+docker run --rm --network master-data-standalone_mds_net -v $(pwd)/backup_geo:/backup minio/mc \
+  mirror local/openg2p-geo /backup/openg2p-geo
+```
+
+### 6.7 DevOps Deployment Checklist
+- [ ] Docker & Docker Compose installed on host VM.
+- [ ] Ports `3005` (UI) and `8044` (API) routed through reverse proxy / Ingress with SSL/TLS termination.
+- [ ] Environment file `.env` configured with production passwords.
+- [ ] Persistent storage volumes assigned to PostgreSQL and MinIO.
+- [ ] Daily cron job configured for PostgreSQL `pg_dump` snapshot.
+- [ ] Healthcheck probe configured to monitor `/ping` on port `8044`.
 
 ---
 
-## Governance & Approval Workflow
-
-MDS enforces strict **Maker-Checker (Four-Eyes Principle)** governance:
-1. **Drafting (Maker)**: Any user can open a draft version (`v2`) and add/edit/retire entries without impacting live consumers.
-2. **Submission**: Click **Submit for approval**.
-3. **Approval (Checker)**: Another user with publish permissions logs in, inspects side-by-side differences in **Compare versions**, and clicks **Approve**.
-4. **Publishing**: The version becomes immutable, timestamped, and immediately effective for external consumers.
-
----
-
-## License
+## 7. License
 Open Source under Apache 2.0 / MIT.
