@@ -84,14 +84,14 @@ services:
       MASTER_DATA_API_DB_USERNAME: ${POSTGRES_USER:-postgres}
       MASTER_DATA_API_DB_PASSWORD: ${POSTGRES_PASSWORD:-password}
       MASTER_DATA_API_DB_DBNAME: ${POSTGRES_DB:-master_data}
-      MASTER_DATA_API_AUTH_ENABLED: "false"
+      MASTER_DATA_API_AUTH_ENABLED: "true"
       MASTER_DATA_API_CSRF_ENABLED: "false"
-      MASTER_DATA_API_AUTH_REDIS_URL: "redis://host.docker.internal:6379/0"
-      COMMON_AUTH_REDIS_URL: "redis://host.docker.internal:6379/0"
+      MASTER_DATA_API_AUTH_REDIS_URL: "redis://host.docker.internal:6387/0"
+      COMMON_AUTH_REDIS_URL: "redis://host.docker.internal:6387/0"
       MASTER_DATA_API_AUTH_PROVIDER_API_URL: "http://localhost:8020"
-      MASTER_DATA_API_KEYCLOAK_CLIENT_ID: "iam-staff-portal"
+      MASTER_DATA_API_KEYCLOAK_CLIENT_ID: "farmer-registry-staff-portal"
       COMMON_AUTH_PROVIDER_API_URL: "http://localhost:8020"
-      COMMON_KEYCLOAK_CLIENT_ID: "iam-staff-portal"
+      COMMON_KEYCLOAK_CLIENT_ID: "farmer-registry-staff-portal"
       COMMON_AUTH_VERIFY_SSL: "false"
       MASTER_DATA_API_AUTH_VERIFY_SSL: "false"
       MASTER_DATA_API_PUBLIC_CATALOGUE_ENABLED: "true"
@@ -102,12 +102,12 @@ services:
       MASTER_DATA_API_BOUNDARY_S3_ACCESS_KEY: minioadmin
       MASTER_DATA_API_BOUNDARY_S3_SECRET_KEY: minioadmin
     volumes:
-      - ./patch_api.py:/app/patch_api.py:ro
+      - ./docker_proxy.py:/app/docker_proxy.py:ro
     command:
       - /bin/sh
       - -c
       - |
-        python3 /app/patch_api.py
+        python3 /app/docker_proxy.py &
         python3 -m openg2p_gen2_master_data.main migrate
         exec gunicorn "openg2p_gen2_master_data.main:app" --workers 2 --worker-class uvicorn.workers.UvicornWorker --bind 0.0.0.0:8000
     ports:
@@ -125,20 +125,20 @@ services:
     container_name: mds-standalone-ui
     networks:
       - mds_net
+    extra_hosts:
+      - "host.docker.internal:host-gateway"
     depends_on:
       master-data-api:
         condition: service_healthy
     volumes:
-      - ./mock_iam.js:/app/mock_iam.js:ro
-      - ./patch_ui.js:/app/patch_ui.js:ro
+      - ./docker_proxy.js:/app/docker_proxy.js:ro
       - ./customize_sidebar.js:/app/customize_sidebar.js:ro
       - ./reorder_sidebar.js:/app/reorder_sidebar.js:ro
     command: >
       sh -c "
-      node /app/patch_ui.js;
       node /app/customize_sidebar.js;
       node /app/reorder_sidebar.js;
-      node /app/mock_iam.js &
+      node /app/docker_proxy.js &
       exec node server.js
       "
     environment:
@@ -147,7 +147,7 @@ services:
       BACKEND_URL: "http://master-data-api:8000"
       IAM_URL: "http://localhost:8020"
       APPLICATION_MNEMONIC: "farmer-registry-staff-portal"
-      LOGIN_PROVIDER_ID: ""
+      LOGIN_PROVIDER_ID: "1"
       COOKIE_DOMAIN: "localhost"
     ports:
       - "${MASTER_DATA_UI_PORT:-3005}:3000"

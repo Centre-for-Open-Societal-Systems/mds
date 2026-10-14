@@ -100,12 +100,25 @@ All containers (`mds-standalone-api`, `mds-standalone-ui`, `mds-standalone-postg
 ### Service Endpoints
 | Component | Endpoint | Credentials / Purpose |
 |---|---|---|
-| **Web Portal (UI)** | [http://localhost:3005](http://localhost:3005) | Main Catalogue UI (Auto-logged in as Admin) |
-| **Master Data API** | [http://localhost:8044](http://localhost:8044) | Core REST API |
+| **Web Portal (UI)** | [http://localhost:3005](http://localhost:3005) | Main Catalogue UI (Authenticates via Keycloak) |
+| **Keycloak IAM** | [http://localhost:8080](http://localhost:8080) | Realm: `staff`, Client: `farmer-registry-staff-portal` |
+| **Staff IAM API** | [http://localhost:8020](http://localhost:8020) | User permissions & session management |
+| **Master Data API** | [http://localhost:8044](http://localhost:8044) | Core REST API (Secured via Keycloak JWTs) |
 | **API Swagger Docs** | [http://localhost:8044/docs](http://localhost:8044/docs) | Interactive OpenAPI documentation |
 | **MinIO Console** | [http://localhost:9011](http://localhost:9011) | User: `minioadmin` / Pass: `minioadmin` |
 | **MinIO S3 API** | [http://localhost:9010](http://localhost:9010) | GeoJSON boundary storage endpoint |
 | **PostgreSQL** | `localhost:5434` | DB: `master_data`, User: `postgres`, Pass: `password` |
+
+### Default Multi-User Accounts
+When accessing [http://localhost:3005](http://localhost:3005), you are redirected to the Keycloak login screen. You can log in as any of the following users:
+
+| Username | Password | Full Name | Assigned Roles & Capabilities |
+|---|---|---|---|
+| `alex.carter` | `alex` | Alex Carter | **Technical Administrator** (Full Maker/Checker, Create, Edit, View, Delete) |
+| `nina.patel` | `nina` | Nina Patel | **Technical Administrator** (Full Maker/Checker, Create, Edit, View, Delete) |
+| `staff` | `staff` | Local Developer | **Reference Data Specialist & Tech Admin** (Full Maker/Checker, Create, Edit, Publish) |
+
+To switch users: click **"Sign out"** in the top-right profile menu. The session is immediately invalidated on the IAM service, allowing you to sign in as a different user.
 
 ### Stopping Services
 ```bash
@@ -114,22 +127,14 @@ docker compose down
 
 ---
 
-## 4. How Standalone Mode Works (Automated Boot Sequence)
+## 4. Real IAM & Keycloak Architecture
 
-### Previous Problem on Fresh Starts
-In previous versions, a fresh start would fail with:
-1. **508 Loop Detected**: Visiting `/en` called `/api/me`, which returned `401 Unauthorized` due to a missing IAM cookie. The browser continuously bounced between `/en` and `/api/login`.
-2. **500 Internal Server Error**: `/api/login` and `/api/me` attempted to contact an external OpenG2P IAM service on port `8020`, which does not exist in standalone mode.
-3. **Backend 401**: `master-data-api` enforced Keycloak JWT token validation even when auth was disabled.
-
-### Automated Solution
-The repository now includes automated startup hooks mounted in `docker-compose.yml`:
-* **`mock_iam.js`**: A lightweight Node HTTP service running on port `8020` inside the UI container. It immediately supplies administrator profiles and permissions for `/auth/get_logged_in_user`, `/user-access/get_application_permissions_for_user`, and redirects authentication requests cleanly.
-* **`patch_ui.js`**: Automatically updates Next.js server auth helpers on startup to allow standalone sessions.
-* **`patch_api.py`**: Automatically configures the FastAPI backend on startup to bypass JWT validation and inject an administrative principal when `MASTER_DATA_API_AUTH_ENABLED=false`.
-* **`customize_sidebar.js` & `reorder_sidebar.js`**: Reorders navigation categories (Crops, Livestock, Seeds, Geography, All Catalogs) dynamically on container boot.
-
-**No manual file copying or container restarts are needed.**
+MDS connects directly to the OpenG2P Keycloak and Staff IAM services:
+* **Real Multi-User Authentication**: No hardcoded mock credentials or simulated sessions. Every user logs in with their own Keycloak identity.
+* **Granular Role-Based Permissions**: When a user logs in, MDS UI requests `/user-access/get_application_permissions_for_user` from IAM for `farmer-registry-staff-portal`. Roles such as `Reference Data Specialist` and `Technical Administrator` grant `referenceData:create`, `referenceData:edit`, `referenceData:view`, and `referenceData:delete`, activating the "+ Add entry" button and draft editing controls.
+* **Standard Token Validation**: Every request from the UI to `master-data-api` transmits the real Keycloak Bearer JWT. `master-data-api` validates token signatures against Keycloak JWKS and enforces required permissions.
+* **Clean Signout**: Clicking "Sign out" redirects to `/auth/logout` on the IAM service, terminating the session and clearing all cookies across tabs.
+* **Transparent Container Network Bridges (`docker_proxy.py` & `docker_proxy.js`)**: Pure TCP forwarding bridges (zero business logic) forward container-local calls on port `8020` (IAM) and `8080` (Keycloak) to the host. In production with standard domain names (e.g., `https://iam.example.org`), the forwarders are replaced simply by setting `IAM_URL=https://iam.example.org`.
 
 ---
 
@@ -184,7 +189,7 @@ MINIO_CONSOLE_PORT=9011
 
 # --- Master Data Core API Settings ---
 MASTER_DATA_API_PORT=8044
-MASTER_DATA_API_AUTH_ENABLED=false
+MASTER_DATA_API_AUTH_ENABLED=true
 MASTER_DATA_API_CSRF_ENABLED=false
 MASTER_DATA_API_PUBLIC_CATALOGUE_ENABLED=true
 MASTER_DATA_API_CATALOGUE_APPROVAL_MODE=permission
@@ -193,26 +198,25 @@ MASTER_DATA_API_CATALOGUE_COUNTRY=ETH
 # --- Master Data UI Settings ---
 MASTER_DATA_UI_PORT=3005
 COOKIE_DOMAIN=localhost
+LOGIN_PROVIDER_ID=1
+APPLICATION_MNEMONIC=farmer-registry-staff-portal
 ```
 
-### 6.3 Deployment Modes: Standalone vs. Production IAM
+### 6.3 Deployment Modes: Corporate Keycloak / IAM Integration (Active)
 
-#### Option A: Standalone Mode (Current Default)
-Use this mode for internal, air-gapped, pilot, or staging environments where an external IAM / Keycloak cluster is not desired.
-* Set `MASTER_DATA_API_AUTH_ENABLED=false`.
-* The containers automatically execute `patch_api.py`, `patch_ui.js`, and `mock_iam.js` via the mounts specified in `docker-compose.yml`.
-* Full catalog editing, maker-checker, and publishing work out of the box with zero external dependencies.
+The deployment is configured for direct integration with OpenG2P Keycloak and IAM:
 
-#### Option B: Corporate Keycloak / IAM Integration
-When integrating MDS into an existing enterprise single-sign-on (SSO) infrastructure:
-1. In `docker-compose.yml` under `master-data-ui`:
-   * Set `LOGIN_PROVIDER_ID` to your Keycloak Provider ID (e.g., `"1"`).
-   * Set `IAM_URL` to your production IAM service endpoint (e.g., `https://iam.example.gov`).
-   * Set `COOKIE_DOMAIN` to your shared domain (e.g., `.example.gov`).
-2. In `master-data-api`:
-   * Set `MASTER_DATA_API_AUTH_ENABLED=true`.
-   * Set `COMMON_AUTH_PROVIDER_API_URL` and `MASTER_DATA_API_AUTH_PROVIDER_API_URL` to your IAM URL.
-   * Provide Keycloak Client ID (`iam-staff-portal` or your configured client).
+1. **Master Data UI (`master-data-ui`)**:
+   * `LOGIN_PROVIDER_ID="1"`: Directs unauthenticated users to the Keycloak OIDC login transaction.
+   * `IAM_URL="http://localhost:8020"`: Points to the IAM service (on server/cloud, set to your IAM ingress URL, e.g. `https://iam.example.org`).
+   * `APPLICATION_MNEMONIC="farmer-registry-staff-portal"`: Identifies the client application for role-to-permission mapping.
+   * `COOKIE_DOMAIN="localhost"`: Set to your deployment root domain (e.g., `.example.org`).
+
+2. **Master Data API (`master-data-api`)**:
+   * `MASTER_DATA_API_AUTH_ENABLED="true"`: Requires valid Keycloak JWT bearer tokens for write and administrative endpoints.
+   * `MASTER_DATA_API_AUTH_PROVIDER_API_URL="http://localhost:8020"`: IAM endpoint for evaluating role permissions and data policies.
+   * `MASTER_DATA_API_KEYCLOAK_CLIENT_ID="farmer-registry-staff-portal"`: Client mnemonic holding user roles.
+   * `MASTER_DATA_API_AUTH_REDIS_URL="redis://host.docker.internal:6387/0"`: Shared Redis instance where IAM session tokens reside.
 
 ### 6.4 Persistent Storage & Volumes
 For production deployments, ensure persistent volume claims (PVCs) or host mounts are backed by resilient storage:
