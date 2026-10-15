@@ -23,10 +23,10 @@
 // Jenkins setup:
 //   - Multibranch Pipeline job on this repository
 //   - Credential "mds-dev-staging-ssh" (SSH Username with private key), user "ubuntu"
-//   - Credential "aws-ecr" (Username with password): username = AWS access key id,
-//     password = secret access key. Needs ecr:GetAuthorizationToken, the push/pull
-//     actions on repositories "mds/*", plus ecr:CreateRepository / PutLifecyclePolicy
-//     for the first run. Leave AWS_CREDENTIALS empty to use the agent's own IAM role.
+//   - Credential "aws-ecr-creds" (kind "AWS Credentials", AWS Credentials plugin).
+//     Needs ecr:GetAuthorizationToken and push/pull on the repositories "mds/*"
+//     (created already in 379220350808 / ap-south-1). Leave AWS_CREDENTIALS empty
+//     to use the agent's own IAM role.
 //   - Linux agent with docker, aws CLI v2, ssh, tar, curl, python3 (node optional)
 //   - The server's security group must allow SSH (22) from the Jenkins agent
 // =============================================================================
@@ -55,9 +55,10 @@ def mode() {
 
 def withAws(Closure body) {
     if (env.AWS_CREDENTIALS) {
-        withCredentials([usernamePassword(credentialsId: env.AWS_CREDENTIALS,
-                                          usernameVariable: 'AWS_ACCESS_KEY_ID',
-                                          passwordVariable: 'AWS_SECRET_ACCESS_KEY')]) { body() }
+        withCredentials([[$class: 'AmazonWebServicesCredentialsBinding',
+                          credentialsId: env.AWS_CREDENTIALS,
+                          accessKeyVariable: 'AWS_ACCESS_KEY_ID',
+                          secretKeyVariable: 'AWS_SECRET_ACCESS_KEY']]) { body() }
     } else {
         body()
     }
@@ -166,7 +167,7 @@ rollback = kubectl rollout undo of mds-api and mds-ui''')
         SSH_CREDENTIALS = 'mds-dev-staging-ssh'
         SSH_OPTS        = '-o StrictHostKeyChecking=accept-new -o BatchMode=yes -o ServerAliveInterval=30'
         AWS_REGION      = 'ap-south-1'
-        AWS_CREDENTIALS = 'aws-ecr'
+        AWS_CREDENTIALS = 'aws-ecr-creds'
         ECR_PREFIX      = 'mds'
     }
 
