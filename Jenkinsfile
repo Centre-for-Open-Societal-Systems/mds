@@ -23,7 +23,7 @@
 // Jenkins setup:
 //   - Multibranch Pipeline job on this repository
 //   - Credential "mds-dev-staging-ssh" (SSH Username with private key), user "ubuntu"
-//   - Credential "aws-ecr" (Username with password): username = AWS access key id,
+//   - Credential "aws-mds-ecr" (Username with password): username = AWS access key id,
 //     password = secret access key. Needs ecr:GetAuthorizationToken, the push/pull
 //     actions on repositories "mds/*", plus ecr:CreateRepository / PutLifecyclePolicy
 //     for the first run. Leave AWS_CREDENTIALS empty to use the agent's own IAM role.
@@ -166,7 +166,7 @@ rollback = kubectl rollout undo of mds-api and mds-ui''')
         SSH_CREDENTIALS = 'mds-dev-staging-ssh'
         SSH_OPTS        = '-o StrictHostKeyChecking=accept-new -o BatchMode=yes -o ServerAliveInterval=30'
         AWS_REGION      = 'ap-south-1'
-        AWS_CREDENTIALS = 'aws-ecr'
+        AWS_CREDENTIALS = 'aws-mds-ecr'
         ECR_PREFIX      = 'mds'
     }
 
