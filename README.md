@@ -5,10 +5,11 @@ A complete, production-ready standalone deployment of **OpenG2P Master Data Serv
 * **Master Data Catalogue UI** (Next.js with customized domain navigation on port `3005`)
 * **PostgreSQL 16** pre-configured for administrative geography and client reference catalogs
 * **MinIO Object Store** (S3 compatible for GeoJSON administrative boundaries)
-* **Pre-configured Reference Catalogs**:
+* **Pre-configured Reference Catalogs (5 Base Domains)**:
   * 🌾 **Crop Domain**: Crop Catalog (129), Crop Categories (7), Crop Varieties (902), Ecological Zones (3)
   * 🐄 **Livestock Domain**: Livestock Species (5), Livestock Breeds (94), Populations (40), Genders (4), Production Types (13), Body Conditions (5), Record Statuses (6)
   * 🌱 **Seed Domain**: Certified Seed Catalog (129), Seed Demand Summary (1), Seed Demand Trend (5), Demand by Crop (18)
+  * 🧪 **Inputs Domain**: Agricultural Inputs Catalog (11 certified fertilizers, pesticides, seed treatments, and soil amendments)
   * 📍 **Geography Domain**: Administrative Regions (14), Administrative Zones (125), Administrative Woredas (1,359)
 
 ---
@@ -109,14 +110,18 @@ All containers (`mds-standalone-api`, `mds-standalone-ui`, `mds-standalone-postg
 | **MinIO S3 API** | [http://localhost:9010](http://localhost:9010) | GeoJSON boundary storage endpoint |
 | **PostgreSQL** | `localhost:5434` | DB: `master_data`, User: `postgres`, Pass: `password` |
 
-### Default Multi-User Accounts
-When accessing [http://localhost:3005](http://localhost:3005), you are redirected to the Keycloak login screen. You can log in as any of the following users:
+### Default Multi-User Accounts & Organization Hierarchy
+When accessing [http://localhost:3005](http://localhost:3005), you are redirected to the Keycloak login screen. Users belong to specific organizations configured to manage their respective catalogs, or global administrator accounts:
 
-| Username | Password | Full Name | Assigned Roles & Capabilities |
-|---|---|---|---|
-| `alex.carter` | `alex` | Alex Carter | **Technical Administrator** (Full Maker/Checker, Create, Edit, View, Delete) |
-| `nina.patel` | `nina` | Nina Patel | **Technical Administrator** (Full Maker/Checker, Create, Edit, View, Delete) |
-| `staff` | `staff` | Local Developer | **Reference Data Specialist & Tech Admin** (Full Maker/Checker, Create, Edit, Publish) |
+| Username | Password | Full Name | Organization / Department | Assigned Catalogs & Capabilities |
+|---|---|---|---|---|
+| `moa.maker` | `password` | Abebe Tadesse | **Ministry of Agriculture (MoA)** | **Maker / Editor**: Crops, Seeds, Inputs (Create/Edit drafts) |
+| `moa.checker` | `password` | Tigist Alemu | **Ministry of Agriculture (MoA)** | **Checker / Approver**: Crops, Seeds, Inputs (Publishing & Approval) |
+| `ldi.specialist` | `password` | Dawit Bekele | **Livestock Development Institute (LDI)** | **Specialist**: Livestock catalogs (Maker & Checker) |
+| `csa.admin` | `password` | Sara Haile | **Central Statistical Agency (CSA)** | **Geography Admin**: Administrative levels & boundaries |
+| `alex.carter` | `alex` | Alex Carter | *Global Administration* | **Technical Administrator** (Full Maker/Checker across all catalogs) |
+| `nina.patel` | `nina` | Nina Patel | *Global Administration* | **Technical Administrator** (Full Maker/Checker across all catalogs) |
+| `staff` | `staff` | Local Developer | *Global Administration* | **Reference Data Specialist & Tech Admin** (Full Maker/Checker) |
 
 To switch users: click **"Sign out"** in the top-right profile menu. The session is immediately invalidated on the IAM service, allowing you to sign in as a different user.
 
@@ -152,6 +157,17 @@ docker exec mds-standalone-api python /tmp/import_all_catalogs.py
 ```bash
 docker cp add_geography_to_catalogs.py mds-standalone-api:/tmp/add_geography_to_catalogs.py
 docker exec mds-standalone-api python /tmp/add_geography_to_catalogs.py
+```
+
+### Import Agricultural Inputs Catalog (5th Catalog)
+```bash
+docker cp import_input_catalog.py mds-standalone-api:/tmp/import_input_catalog.py
+docker exec mds-standalone-api python /tmp/import_input_catalog.py
+```
+
+### Setup Keycloak Organizations & User Access Hierarchy
+```bash
+python3 setup_keycloak_orgs_and_users.py
 ```
 
 ---

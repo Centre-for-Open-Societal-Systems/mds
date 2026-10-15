@@ -4,7 +4,7 @@ const fs = require('fs');
 const serverFile = '.next/server/chunks/ssr/[root-of-the-server]__4be6bc67._.js';
 if (fs.existsSync(serverFile)) {
   let serverContent = fs.readFileSync(serverFile, 'utf8');
-  const targetServerNav = 'l=[{href:"/",labelKey:"home",Icon:g},{href:"/datasets/CROP_CATALOG",title:"Crops",Icon:i},{href:"/datasets/LIVESTOCK_CATALOG",title:"Livestock",Icon:i},{href:"/datasets/SEED_CATALOG",title:"Seeds",Icon:i},{href:"/geo-locations",labelKey:"geo_locations",Icon:h.MapPin},{href:"/datasets",title:"All Catalogs",Icon:i},{href:"/releases",labelKey:"releases",Icon:j},{href:"/changes",labelKey:"recent_changes",Icon:k}];';
+  const targetServerNav = 'l=[{href:"/",labelKey:"home",Icon:g},{href:"/datasets/CROP_CATALOG",title:"Crops",Icon:i},{href:"/datasets/LIVESTOCK_CATALOG",title:"Livestock",Icon:i},{href:"/datasets/SEED_CATALOG",title:"Seeds",Icon:i},{href:"/datasets/INPUT_CATALOG",title:"Inputs",Icon:i},{href:"/geo-locations",labelKey:"geo_locations",Icon:h.MapPin},{href:"/datasets",title:"All Catalogs",Icon:i},{href:"/releases",labelKey:"releases",Icon:j},{href:"/changes",labelKey:"recent_changes",Icon:k}];';
 
   serverContent = serverContent.replace(
     /l=\[\{href:"\/",labelKey:"home".*?\}\];/,
@@ -26,7 +26,7 @@ if (fs.existsSync(serverFile)) {
 const clientFile = '.next/static/chunks/b2ebbf2130917b8c.js';
 if (fs.existsSync(clientFile)) {
   let clientContent = fs.readFileSync(clientFile, 'utf8');
-  const targetClientNav = 'p=[{href:"/",labelKey:"home",Icon:l},{href:"/datasets/CROP_CATALOG",title:"Crops",Icon:s},{href:"/datasets/LIVESTOCK_CATALOG",title:"Livestock",Icon:s},{href:"/datasets/SEED_CATALOG",title:"Seeds",Icon:s},{href:"/geo-locations",labelKey:"geo_locations",Icon:u.MapPin},{href:"/datasets",title:"All Catalogs",Icon:s},{href:"/releases",labelKey:"releases",Icon:c},{href:"/changes",labelKey:"recent_changes",Icon:f}];';
+  const targetClientNav = 'p=[{href:"/",labelKey:"home",Icon:l},{href:"/datasets/CROP_CATALOG",title:"Crops",Icon:s},{href:"/datasets/LIVESTOCK_CATALOG",title:"Livestock",Icon:s},{href:"/datasets/SEED_CATALOG",title:"Seeds",Icon:s},{href:"/datasets/INPUT_CATALOG",title:"Inputs",Icon:s},{href:"/geo-locations",labelKey:"geo_locations",Icon:u.MapPin},{href:"/datasets",title:"All Catalogs",Icon:s},{href:"/releases",labelKey:"releases",Icon:c},{href:"/changes",labelKey:"recent_changes",Icon:f}];';
 
   clientContent = clientContent.replace(
     /p=\[\{href:"\/",labelKey:"home".*?\}\];/,

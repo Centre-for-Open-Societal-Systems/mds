@@ -19,19 +19,20 @@ def run():
     cur.execute("ALTER TABLE g2p_list_versions DISABLE TRIGGER trg_g2p_list_versions_guard;")
     cur.execute("ALTER TABLE g2p_list_version_values DISABLE TRIGGER trg_g2p_list_version_values_guard;")
 
-    def setup_catalog(catalog_id, display_name, description, domain="geography", is_hierarchical=False, attribute_schema=None):
+    def setup_catalog(catalog_id, display_name, description, domain="geography", is_hierarchical=False, attribute_schema=None, owner_org="Central Statistical Agency (CSA)"):
         print(f"Setting up geography catalog: {catalog_id} ({display_name})...")
         cur.execute("""
-            INSERT INTO g2p_attributes (attribute_id, attribute_code, attribute_display, is_hierarchical, description, domain, visibility, current_version_no)
-            VALUES (%s, %s, %s, %s, %s, %s, 'public', 1)
+            INSERT INTO g2p_attributes (attribute_id, attribute_code, attribute_display, is_hierarchical, description, domain, owner_org, visibility, current_version_no)
+            VALUES (%s, %s, %s, %s, %s, %s, %s, 'public', 1)
             ON CONFLICT (attribute_id) DO UPDATE SET
                 attribute_code = EXCLUDED.attribute_code,
                 attribute_display = EXCLUDED.attribute_display,
                 is_hierarchical = EXCLUDED.is_hierarchical,
                 description = EXCLUDED.description,
                 domain = EXCLUDED.domain,
+                owner_org = EXCLUDED.owner_org,
                 current_version_no = 1;
-        """, (catalog_id, catalog_id, display_name, is_hierarchical, description, domain))
+        """, (catalog_id, catalog_id, display_name, is_hierarchical, description, domain, owner_org))
 
         cur.execute("""
             INSERT INTO g2p_list_versions (list_id, version_no, list_code, display, is_hierarchical, attribute_schema, status, effective_from, published_at)
