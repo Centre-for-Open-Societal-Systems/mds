@@ -176,7 +176,37 @@ python3 setup_keycloak_orgs_and_users.py
 
 This section is prepared for DevOps and Platform Engineers deploying MDS to cloud environments (Kubernetes, AWS ECS, Docker Swarm, or dedicated VMs).
 
-### 6.1 Network & Port Requirements
+### 6.1 Server vs. Local: Required Files and Docker Compose Guide
+
+#### A. Files & Folders Required on the Server
+
+| File / Folder | Needed on Server? | Purpose on Server |
+|---|---|---|
+| `customize_sidebar.js` | **REQUIRED** | **Critical**: Mounts to `/app/customize_sidebar.js` in `master-data-ui` container so the UI displays all 5 base domains (Crops, Livestock, Seeds, Inputs, Geography). |
+| `import_all_catalogs.py` | **REQUIRED** | Seeds base catalogs for Crops, Livestock, and Seeds into PostgreSQL. |
+| `add_geography_to_catalogs.py` | **REQUIRED** | Seeds 1,498 administrative units (Regions, Zones, Woredas) into PostgreSQL. |
+| `import_input_catalog.py` | **REQUIRED** | Seeds the 5th catalog (**Agricultural Inputs**) into PostgreSQL. |
+| `setup_keycloak_orgs_and_users.py` | **REQUIRED** | Provisions Keycloak Organizations (MoA, LDI, CSA), domain users, and role mappings. |
+| `data/` | **REQUIRED** | Contains reference datasets (`crop_catalog.xlsx`, `seed_catalog/`, `livestock_catalog/`, `location_catalog/`). |
+| `docker_proxy.py` | *LOCAL ONLY* | Pure TCP bridge for local development. **Omit on Server** when `IAM_URL` points to server ingress. |
+| `docker_proxy.js` | *LOCAL ONLY* | Pure TCP bridge for local development. **Omit on Server** when `IAM_URL` points to server ingress. |
+
+#### B. `docker-compose.yml` Lines: Local Standalone vs. Production Server
+
+| `docker-compose.yml` Configuration | Local Development Value | Production / Staging Server Value |
+|---|---|---|
+| `extra_hosts: ["host.docker.internal:host-gateway"]` | Kept (reaches host ports) | **Remove / Omit** (Containers use cluster DNS) |
+| `volumes: - ./docker_proxy.py:/app/docker_proxy.py:ro` | Kept (local port forwarder) | **Remove / Omit** (Not needed on server) |
+| `volumes: - ./docker_proxy.js:/app/docker_proxy.js:ro` | Kept (local port forwarder) | **Remove / Omit** (Not needed on server) |
+| `volumes: - ./customize_sidebar.js:/app/customize_sidebar.js:ro` | **Keep** | **MUST KEEP** (Enables 5 domain sidebar navigation) |
+| `MASTER_DATA_API_AUTH_REDIS_URL` | `redis://host.docker.internal:6387/0` | Point to server Redis (e.g. `redis://redis:6379/0`) |
+| `MASTER_DATA_API_AUTH_PROVIDER_API_URL` | `http://localhost:8020` | Point to server IAM (e.g. `https://iam.oanstaging.com`) |
+| `IAM_URL` (in `master-data-ui`) | `http://localhost:8020` | Point to server IAM (e.g. `https://iam.oanstaging.com`) |
+| `COOKIE_DOMAIN` (in `master-data-ui`) | `localhost` | Set to server domain (e.g. `.oanstaging.com`) |
+
+---
+
+### 6.2 Network & Port Requirements
 Ensure the following ports are open or mapped in your ingress/reverse proxy:
 
 | Internal Port | External/Host Port | Service | Protocol | Exposure |
