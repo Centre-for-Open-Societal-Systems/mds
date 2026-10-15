@@ -23,10 +23,11 @@
 // Jenkins setup:
 //   - Multibranch Pipeline job on this repository
 //   - Credential "mds-dev-staging-ssh" (SSH Username with private key), user "ubuntu"
-//   - Credential "aws-mds-ecr" (Username with password): username = AWS access key id,
-//     password = secret access key. Needs ecr:GetAuthorizationToken, the push/pull
-//     actions on repositories "mds/*", plus ecr:CreateRepository / PutLifecyclePolicy
-//     for the first run. Leave AWS_CREDENTIALS empty to use the agent's own IAM role.
+//   - AWS credential for ECR. AWS_CREDENTIALS lists the IDs to try, first found wins;
+//     each may be "Username with password" (access key id / secret access key) or
+//     "AWS Credentials". Default: aws-mds-ecr, then the shared aws-ecr-creds.
+//     Needs ecr:GetAuthorizationToken and push/pull on the repositories "mds/*".
+//     Leave AWS_CREDENTIALS empty to use the agent's own IAM role.
 //   - Linux agent with docker, aws CLI v2, ssh, tar, curl, python3 (node optional)
 //   - The server's security group must allow SSH (22) from the Jenkins agent
 // =============================================================================
@@ -53,14 +54,43 @@ def mode() {
     return params.ACTION
 }
 
-def withAws(Closure body) {
-    if (env.AWS_CREDENTIALS) {
-        withCredentials([usernamePassword(credentialsId: env.AWS_CREDENTIALS,
-                                          usernameVariable: 'AWS_ACCESS_KEY_ID',
-                                          passwordVariable: 'AWS_SECRET_ACCESS_KEY')]) { body() }
-    } else {
-        body()
+// Binding for one AWS credential, by its kind in Jenkins.
+def awsBinding(String id, String kind) {
+    if (kind == 'aws') {
+        return [$class: 'AmazonWebServicesCredentialsBinding', credentialsId: id,
+                accessKeyVariable: 'AWS_ACCESS_KEY_ID', secretKeyVariable: 'AWS_SECRET_ACCESS_KEY']
     }
+    return usernamePassword(credentialsId: id, usernameVariable: 'AWS_ACCESS_KEY_ID',
+                            passwordVariable: 'AWS_SECRET_ACCESS_KEY')
+}
+
+// Finds the first AWS_CREDENTIALS entry that exists, once per build.
+// The probe has an empty body, so only a missing/mistyped credential is caught here.
+def resolveAwsCredential() {
+    if (env.AWS_CRED_FOUND) { return }
+    for (String rawId : env.AWS_CREDENTIALS.tokenize(',')) {
+        def id = rawId.trim()
+        for (String kind : ['userpass', 'aws']) {
+            try {
+                withCredentials([awsBinding(id, kind)]) { }
+                env.AWS_CRED_FOUND = "${id}|${kind}"
+                echo "AWS credential: ${id} (${kind == 'aws' ? 'AWS Credentials' : 'Username with password'})"
+                return
+            } catch (org.jenkinsci.plugins.workflow.steps.FlowInterruptedException abort) {
+                throw abort                     // build aborted: don't keep probing
+            } catch (err) {
+                echo "AWS credential ${id} as ${kind}: not usable (${err.message})"
+            }
+        }
+    }
+    error "None of the AWS credentials [${env.AWS_CREDENTIALS}] exist in Jenkins (System > Global credentials)."
+}
+
+def withAws(Closure body) {
+    if (!env.AWS_CREDENTIALS) { body(); return }
+    resolveAwsCredential()
+    def found = env.AWS_CRED_FOUND.tokenize('|')
+    withCredentials([awsBinding(found[0], found[1])]) { body() }
 }
 
 def withSsh(Closure body) {
@@ -166,7 +196,7 @@ rollback = kubectl rollout undo of mds-api and mds-ui''')
         SSH_CREDENTIALS = 'mds-dev-staging-ssh'
         SSH_OPTS        = '-o StrictHostKeyChecking=accept-new -o BatchMode=yes -o ServerAliveInterval=30'
         AWS_REGION      = 'ap-south-1'
-        AWS_CREDENTIALS = 'aws-mds-ecr'
+        AWS_CREDENTIALS = 'aws-mds-ecr,aws-ecr-creds'
         ECR_PREFIX      = 'mds'
     }
 
