@@ -199,10 +199,9 @@ This section is prepared for DevOps and Platform Engineers deploying MDS to clou
 | `volumes: - ./docker_proxy.py:/app/docker_proxy.py:ro` | Kept (local port forwarder) | **Remove / Omit** (Not needed on server) |
 | `volumes: - ./docker_proxy.js:/app/docker_proxy.js:ro` | Kept (local port forwarder) | **Remove / Omit** (Not needed on server) |
 | `volumes: - ./customize_sidebar.js:/app/customize_sidebar.js:ro` | **Keep** | **MUST KEEP** (Enables 5 domain sidebar navigation) |
-| `MASTER_DATA_API_AUTH_REDIS_URL` | `redis://host.docker.internal:6387/0` | Point to server Redis (e.g. `redis://redis:6379/0`) |
-| `MASTER_DATA_API_AUTH_PROVIDER_API_URL` | `http://localhost:8020` | Point to server IAM (e.g. `https://iam.oanstaging.com`) |
-| `IAM_URL` (in `master-data-ui`) | `http://localhost:8020` | Point to server IAM (e.g. `https://iam.oanstaging.com`) |
-| `COOKIE_DOMAIN` (in `master-data-ui`) | `localhost` | Set to server domain (e.g. `.oanstaging.com`) |
+| `IAM_URL` (in `.env` or environment) | `http://localhost:8020` | Set to server IAM domain in `.env` (e.g. `https://iam-dev.oanstaging.com`) |
+| `COOKIE_DOMAIN` (in `.env` or environment) | `localhost` | Set to server root domain in `.env` (e.g. `.oanstaging.com`) |
+| `MASTER_DATA_API_AUTH_REDIS_URL` (in `.env`) | `redis://host.docker.internal:6387/0` | Point to server Redis (e.g. `redis://redis:6379/0`) |
 
 ---
 
