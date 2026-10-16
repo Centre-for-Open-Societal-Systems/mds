@@ -140,8 +140,11 @@ def refreshPullSecret(String ns) {
 
 // Waits until the API /ping and the UI /en answer through the ingress.
 // --resolve pins the names to the server, so staging (*.mda.test) works without DNS.
+// The server IP is looked up from MDS_HOST each run (it changes when the EC2 instance restarts).
 def smokeTest(Map hosts) {
     sh """
+        MDS_IP=\$(getent hosts "\$MDS_HOST" | awk '{print \$1; exit}')
+        [ -n "\$MDS_IP" ] || { echo "cannot resolve \$MDS_HOST"; exit 1; }
         for url in https://${hosts.api}/ping https://${hosts.ui}/en; do
           host=\$(echo "\$url" | cut -d/ -f3)
           for i in \$(seq 1 20); do
@@ -191,8 +194,8 @@ rollback = kubectl rollout undo of mds-api and mds-ui''')
     }
 
     environment {
-        MDS_HOST        = 'ec2-13-233-134-2.ap-south-1.compute.amazonaws.com'
-        MDS_IP          = '13.233.134.2'
+        // Route 53 name of the MDS-dev-staging server; follows the instance's public IP.
+        MDS_HOST        = 'mds-dev.oanstaging.com'
         SSH_CREDENTIALS = 'mds-dev-staging-ssh'
         SSH_OPTS        = '-o StrictHostKeyChecking=accept-new -o BatchMode=yes -o ServerAliveInterval=30'
         AWS_REGION      = 'ap-south-1'
