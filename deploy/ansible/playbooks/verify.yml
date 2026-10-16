@@ -1,0 +1,168 @@
+---
+# Health verification (README 6.5 probes) - in-cluster and, optionally, through ingress.
+#   ansible-playbook playbooks/verify.yml -e mds_env=develop
+#   ansible-playbook playbooks/verify.yml -e mds_env=staging -e verify_external=false   # before DNS exists
+- name: Verify MDS deployment
+  hosts: kube_control[0]
+  become: true
+  gather_facts: false
+  vars:
+    ansible_python_interpreter: "{{ k8s_venv }}/bin/python"
+    verify_external: true
+  environment:
+    K8S_AUTH_KUBECONFIG: "{{ kubeconfig_path }}"
+    KUBECONFIG: "{{ kubeconfig_path }}"
+  pre_tasks:
+    - name: Load target environment
+      ansible.builtin.import_tasks: tasks/load-env.yml
+  tasks:
+    - name: Nodes
+      ansible.builtin.command: kubectl get nodes -o wide
+      register: nodes
+      changed_when: false
+
+    - name: Workloads
+      ansible.builtin.command: kubectl -n {{ mds_namespace }} get pods,svc,ingress,pvc,hpa,cronjob,certificate -o wide
+      register: workloads
+      changed_when: false
+      failed_when: false
+
+    - name: Cluster state
+      ansible.builtin.debug:
+        msg: "{{ nodes.stdout_lines + [''] + workloads.stdout_lines }}"
+
+    - name: Find running pods
+      kubernetes.core.k8s_info:
+        kind: Pod
+        namespace: "{{ mds_namespace }}"
+        label_selectors: ["app.kubernetes.io/name={{ item }}"]
+        field_selectors: ["status.phase=Running"]
+      register: pods
+      failed_when: pods.resources | length == 0
+      loop: [mds-api, mds-ui, mds-postgres]
+
+    - name: Index pods
+      ansible.builtin.set_fact:
+        api_pod: "{{ pods.results[0].resources[0].metadata.name }}"
+        ui_pod: "{{ pods.results[1].resources[0].metadata.name }}"
+        pg_pod: "{{ pods.results[2].resources[0].metadata.name }}"
+
+    - name: "PostgreSQL: pg_isready"
+      kubernetes.core.k8s_exec:
+        namespace: "{{ mds_namespace }}"
+        pod: "{{ pg_pod }}"
+        command: pg_isready -U {{ mds_postgres_user }} -d {{ mds_postgres_db }}
+      register: pg_ready
+
+    - name: "PostgreSQL: tables per schema"
+      kubernetes.core.k8s_exec:
+        namespace: "{{ mds_namespace }}"
+        pod: "{{ pg_pod }}"
+        command: >-
+          psql -U {{ mds_postgres_user }} -d {{ mds_postgres_db }} -At -c
+          "select table_schema || ': ' || count(*) from information_schema.tables
+          where table_schema not in ('pg_catalog','information_schema') group by table_schema order by 1"
+      register: pg_tables
+      failed_when: false
+
+    - name: "API: GET /ping (in pod)"
+      kubernetes.core.k8s_exec:
+        namespace: "{{ mds_namespace }}"
+        pod: "{{ api_pod }}"
+        container: api
+        command: python -c "import urllib.request as u; r=u.urlopen('http://localhost:8000/ping'); print(r.status, r.read()[:200])"
+      register: api_ping
+
+    - name: "UI: GET /en (in pod)"
+      kubernetes.core.k8s_exec:
+        namespace: "{{ mds_namespace }}"
+        pod: "{{ ui_pod }}"
+        container: ui
+        command: node -e "fetch('http://localhost:3000/en',{redirect:'manual'}).then(r=>{console.log(r.status);process.exit(r.status<500?0:1)}).catch(e=>{console.error(e);process.exit(1)})"
+      register: ui_en
+
+    # Standalone without a login password: the mock IAM answers with the admin profile.
+    - name: "Mock IAM: /auth/get_logged_in_user (standalone)"
+      kubernetes.core.k8s_exec:
+        namespace: "{{ mds_namespace }}"
+        pod: "{{ ui_pod }}"
+        container: mock-iam
+        command: node -e "fetch('http://localhost:8020/auth/get_logged_in_user').then(async r=>{console.log(r.status,(await r.text()).slice(0,200));process.exit(r.ok?0:1)}).catch(e=>{console.error(e);process.exit(1)})"
+      register: mock_iam
+      when: mds_standalone_mode and not mds_keycloak_enabled and not (vault_standalone_login_password | default(''))
+
+    # Keycloak login: without a session both the mock IAM and the API must refuse (401),
+    # and the sidecar must reach Keycloak and see the realm's public issuer.
+    - name: "Keycloak: realm reachable from the UI pod, issuer {{ mds_keycloak_issuer }}"
+      kubernetes.core.k8s_exec:
+        namespace: "{{ mds_namespace }}"
+        pod: "{{ ui_pod }}"
+        container: mock-iam
+        command: >-
+          node -e "const e=process.env;
+          fetch(e.MDS_KEYCLOAK_INTERNAL_URL+'/.well-known/openid-configuration').then(r=>r.json()).then(j=>{
+          const ok=j.issuer===e.MDS_KEYCLOAK_ISSUER; console.log((ok?'issuer ':'ISSUER MISMATCH ')+j.issuer); process.exit(ok?0:1)})
+          .catch(err=>{console.error(err.message);process.exit(1)})"
+      register: kc_realm
+      when: mds_standalone_mode and mds_keycloak_enabled
+
+    - name: "Keycloak: mock IAM refuses a request without a session"
+      kubernetes.core.k8s_exec:
+        namespace: "{{ mds_namespace }}"
+        pod: "{{ ui_pod }}"
+        container: mock-iam
+        command: node -e "fetch('http://localhost:8020/auth/get_logged_in_user').then(r=>{console.log('mock IAM without session ->',r.status);process.exit(r.status===401?0:1)}).catch(e=>{console.error(e.message);process.exit(1)})"
+      register: kc_mock
+      when: mds_standalone_mode and mds_keycloak_enabled
+
+    - name: "Keycloak: API refuses a request without a token"
+      kubernetes.core.k8s_exec:
+        namespace: "{{ mds_namespace }}"
+        pod: "{{ api_pod }}"
+        container: api
+        command: >-
+          python -c "import httpx, sys;
+          c = httpx.post('http://localhost:8000/catalogue/get_lists', json={}).status_code;
+          print('API without token ->', c); sys.exit(0 if c == 401 else 1)"
+      register: kc_api
+      when: mds_standalone_mode and mds_keycloak_enabled
+
+    - name: External checks through ingress
+      when: verify_external | bool
+      delegate_to: localhost
+      become: false
+      vars:
+        ansible_python_interpreter: "{{ ansible_playbook_python }}"
+      block:
+        - name: "External: https://{{ mds_api_host }}/ping"
+          ansible.builtin.uri:
+            url: "https://{{ mds_api_host }}/ping"
+            validate_certs: "{{ tls_cluster_issuer == 'letsencrypt-prod' }}"
+            url_username: "{{ mds_ingress_basic_auth_user if mds_ingress_basic_auth_enabled else omit }}"
+            url_password: "{{ vault_ingress_basic_auth_password if mds_ingress_basic_auth_enabled else omit }}"
+            force_basic_auth: "{{ mds_ingress_basic_auth_enabled }}"
+          register: ext_api
+
+        - name: "External: https://{{ mds_ui_host }}/en"
+          ansible.builtin.uri:
+            url: "https://{{ mds_ui_host }}/en"
+            validate_certs: "{{ tls_cluster_issuer == 'letsencrypt-prod' }}"
+            follow_redirects: none
+            status_code: [200, 302, 307, 308]
+            url_username: "{{ mds_ingress_basic_auth_user if mds_ingress_basic_auth_enabled else omit }}"
+            url_password: "{{ vault_ingress_basic_auth_password if mds_ingress_basic_auth_enabled else omit }}"
+            force_basic_auth: "{{ mds_ingress_basic_auth_enabled }}"
+          register: ext_ui
+
+    - name: Result
+      ansible.builtin.debug:
+        msg:
+          - "PostgreSQL : {{ pg_ready.stdout | trim }}"
+          - "API /ping  : {{ api_ping.stdout | trim }}"
+          - "UI /en     : HTTP {{ ui_en.stdout | trim }}"
+          - "Mock IAM   : {{ mock_iam.stdout | default('n/a') | trim }}"
+          - >-
+            Keycloak   : {{ ([kc_realm.stdout | default(''), kc_mock.stdout | default(''), kc_api.stdout | default('')]
+            | map('trim') | select | join(' | ')) or 'n/a' }}
+          - "Tables     : {{ pg_tables.stdout_lines | default([]) | join(', ') }}"
+          - "External   : {{ 'API ' ~ ext_api.status ~ ' / UI ' ~ ext_ui.status if (verify_external | bool) else 'skipped' }}"

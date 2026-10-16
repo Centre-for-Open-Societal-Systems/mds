@@ -1,0 +1,17 @@
+---
+# Idempotent: also used for upgrades (change image tags / vars and re-run).
+# Usage: ansible-playbook playbooks/03-deploy-mds.yml -e mds_env=develop   (or staging)
+- name: Deploy OpenG2P MDS (PostgreSQL, MinIO, API, UI, ingress, backups)
+  hosts: kube_control[0]
+  become: true
+  gather_facts: false
+  vars:
+    ansible_python_interpreter: "{{ k8s_venv }}/bin/python"
+  environment:
+    K8S_AUTH_KUBECONFIG: "{{ kubeconfig_path }}"
+    KUBECONFIG: "{{ kubeconfig_path }}"
+  pre_tasks:
+    - name: Load target environment
+      ansible.builtin.import_tasks: tasks/load-env.yml
+  roles:
+    - mds

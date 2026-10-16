@@ -1,0 +1,59 @@
+---
+# Cluster add-ons: ingress-nginx (ingress), cert-manager (TLS).
+# k3s already ships local-path storage and metrics-server (needed for HPA).
+
+- name: Add helm repositories
+  kubernetes.core.helm_repository:
+    name: "{{ item.name }}"
+    repo_url: "{{ item.url }}"
+  loop:
+    - { name: ingress-nginx, url: "https://kubernetes.github.io/ingress-nginx" }
+    - { name: jetstack, url: "https://charts.jetstack.io" }
+
+- name: Install ingress-nginx
+  kubernetes.core.helm:
+    name: ingress-nginx
+    chart_ref: ingress-nginx/ingress-nginx
+    chart_version: "{{ ingress_nginx_chart_version }}"
+    release_namespace: ingress-nginx
+    create_namespace: true
+    update_repo_cache: true
+    wait: true
+    wait_timeout: 10m
+    values:
+      controller:
+        replicaCount: 2
+        service:
+          type: LoadBalancer          # k3s ServiceLB binds 80/443 on the nodes
+          externalTrafficPolicy: Local # preserve client IPs for allowlists
+        config:
+          use-forwarded-headers: "true"
+          ssl-redirect: "true"
+          hsts: "true"
+        metrics:
+          enabled: true
+        podDisruptionBudget:
+          enabled: true
+          minAvailable: 1
+
+- name: Install cert-manager
+  kubernetes.core.helm:
+    name: cert-manager
+    chart_ref: jetstack/cert-manager
+    chart_version: "{{ cert_manager_chart_version }}"
+    release_namespace: cert-manager
+    create_namespace: true
+    wait: true
+    wait_timeout: 10m
+    values:
+      crds:
+        enabled: true
+
+- name: Create ClusterIssuers (letsencrypt-prod, letsencrypt-staging, selfsigned)
+  kubernetes.core.k8s:
+    state: present
+    template: cluster-issuers.yaml.j2
+  retries: 5
+  delay: 10
+  register: issuers
+  until: issuers is succeeded

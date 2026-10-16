@@ -1,0 +1,76 @@
+---
+# =============================================================================
+# STAGING environment -> Kubernetes namespace "staging"
+# Overrides inventory/group_vars/all/main.yml. Loaded with: -e mds_env=staging
+#
+# Runs next to develop on the single 2-vCPU MDS-dev-staging server (t3.large), so it
+# is a SMALL copy of develop, not production-sized: 1 replica, no autoscaling, minimal
+# CPU requests. Move to the production sizing below once staging has its own capacity.
+# =============================================================================
+mds_environment: staging
+mds_namespace: staging
+
+# Hostnames -> ingress IP of the MDS-dev-staging server (13.126.71.6 public / 10.0.1.51 private).
+# *.mda.test is not public DNS: add these names (and keycloak.mda.test) to the hosts file of each client.
+mds_ui_host: mds-staging.mda.test
+mds_api_host: mds-api-staging.mda.test
+mds_minio_console_host: mds-minio-staging.mda.test
+
+# No public DNS -> self-signed certificates (browser warning is expected).
+tls_cluster_issuer: selfsigned
+
+# Single-node RKE2: bundled ingress-nginx runs in kube-system with hostNetwork,
+# so its traffic reaches pods from the node subnet.
+mds_ingress_controller_namespace: kube-system
+mds_ingress_source_cidrs: ["10.0.1.0/24"]
+
+# Pin the release candidate under test. Uncomment to override the shared values.
+# mds_api_image: <registry>/openg2p-master-data-api:<release-tag>
+# mds_ui_image: <registry>/openg2p-master-data-ui:<release-tag>
+
+# Shared node: single replica, no autoscaling, replace pods in place on deploy.
+# Production sizing (needs ~1 extra vCPU): replicas 2, mds_hpa_enabled true, hpa max 4.
+mds_api_replicas: 1
+mds_ui_replicas: 1
+mds_hpa_enabled: false
+mds_rollout_max_unavailable: 1
+mds_rollout_max_surge: 0
+
+# CPU requests are kept minimal: the node is almost fully CPU-requested by RKE2,
+# Rancher and develop. Limits still let pods burst when the CPU is idle.
+mds_api_resources:
+  requests: { cpu: 50m, memory: 256Mi }
+  limits: { cpu: 500m, memory: 768Mi }
+mds_ui_resources:
+  requests: { cpu: 30m, memory: 192Mi }
+  limits: { cpu: 500m, memory: 512Mi }
+mds_postgres_resources:
+  requests: { cpu: 40m, memory: 256Mi }
+  limits: { cpu: 500m, memory: 1Gi }
+mds_minio_resources:
+  requests: { cpu: 20m, memory: 128Mi }
+  limits: { cpu: 250m, memory: 512Mi }
+mds_seed_resources:
+  requests: { cpu: 1m, memory: 256Mi }
+  limits: { cpu: "1", memory: 1Gi }
+
+mds_postgres_storage: 5Gi
+mds_minio_storage: 5Gi
+
+# Backups
+mds_backup_enabled: true
+mds_backup_schedule: "0 1 * * *"    # 01:00 UTC, offset from develop
+mds_backup_retention_days: 7
+mds_backup_storage: 10Gi
+
+# Access restriction
+mds_ingress_allowlist_cidrs: []
+mds_ingress_basic_auth_enabled: false
+
+# Login through the shared Keycloak (playbook 05-keycloak.yml, realm mds-staging).
+# Users: mds-admin / mds-maker / mds-checker (initial passwords: Secret mds-keycloak-users).
+mds_keycloak_enabled: true
+mds_keycloak_public_url: https://keycloak.mda.test
+
+# Cluster: single-node RKE2 on the MDS-dev-staging server (Ansible runs on that server).
+kubeconfig_path: /etc/rancher/rke2/rke2.yaml

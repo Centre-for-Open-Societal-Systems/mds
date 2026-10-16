@@ -1,0 +1,71 @@
+---
+# Load reference catalogs (code lists, agriculture theme, geography) with the official
+# OpenG2P country-pack loader. Safe to re-run: unchanged lists are skipped, changed
+# lists become DRAFTs for approval (see mds_seed_* in group_vars).
+# Usage:
+#   ansible-playbook playbooks/04-seed-catalogs.yml -e mds_env=develop
+#   ansible-playbook playbooks/04-seed-catalogs.yml -e mds_env=develop -e '{"mds_seed_load":["geo"]}'
+- name: Seed reference catalogs (code lists, agriculture, geography)
+  hosts: kube_control[0]
+  become: true
+  gather_facts: false
+  vars:
+    ansible_python_interpreter: "{{ k8s_venv }}/bin/python"
+  environment:
+    K8S_AUTH_KUBECONFIG: "{{ kubeconfig_path }}"
+    KUBECONFIG: "{{ kubeconfig_path }}"
+  pre_tasks:
+    - name: Load target environment
+      ansible.builtin.import_tasks: tasks/load-env.yml
+  tasks:
+    - name: Remove previous seed job (jobs are immutable)
+      kubernetes.core.k8s:
+        state: absent
+        kind: Job
+        namespace: "{{ mds_namespace }}"
+        name: mds-seed
+        wait: true
+        delete_options:
+          propagationPolicy: Foreground
+
+    - name: Run seed job (pack {{ mds_seed_country_pack }}, load {{ mds_seed_load | join(',') }}, domains {{ mds_seed_domains | join(',') }})
+      kubernetes.core.k8s:
+        state: present
+        template: "{{ playbook_dir }}/../roles/mds/templates/seed-job.yaml.j2"
+        wait: true
+        wait_condition:
+          type: Complete
+          status: "True"
+        wait_timeout: 1800
+      register: seed_job
+      ignore_errors: true
+
+    - name: Seed job log
+      ansible.builtin.command: kubectl -n {{ mds_namespace }} logs job/mds-seed -c seed --tail=80
+      register: seed_log
+      changed_when: false
+      failed_when: false
+
+    - name: Show seed log
+      ansible.builtin.debug:
+        msg: "{{ seed_log.stdout_lines }}"
+
+    - name: Fail if the seed job did not complete
+      ansible.builtin.fail:
+        msg: "Seed job failed - see the log above and: kubectl -n {{ mds_namespace }} describe job mds-seed"
+      when: seed_job is failed
+
+    - name: Catalogue contents
+      ansible.builtin.command: >-
+        kubectl -n {{ mds_namespace }} exec mds-postgres-0 -- psql -U {{ mds_postgres_user }} -d {{ mds_postgres_db }} -At -c
+        "select 'geo levels: ' || count(*) from g2p_geo_levels
+         union all select 'geo units: ' || count(*) from g2p_geo_level_values
+         union all select 'attributes (lists): ' || count(*) from g2p_attributes
+         union all select 'attribute values: ' || count(*) from g2p_attribute_values"
+      register: counts
+      changed_when: false
+      failed_when: false
+
+    - name: Result
+      ansible.builtin.debug:
+        msg: "{{ counts.stdout_lines | default([]) + counts.stderr_lines | default([]) }}"

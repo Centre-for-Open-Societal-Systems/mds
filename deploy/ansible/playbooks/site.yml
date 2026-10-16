@@ -1,0 +1,32 @@
+---
+# Full build: hosts -> k3s cluster -> platform add-ons -> MDS (develop + staging) -> verification.
+# Do NOT pass -e mds_env here (extra vars would override both imports).
+# Catalog seeding is separate (04-seed-catalogs.yml) so data is never re-imported by accident.
+- name: Prepare hosts
+  ansible.builtin.import_playbook: 00-prepare-hosts.yml
+
+- name: Kubernetes cluster
+  ansible.builtin.import_playbook: 01-k8s-cluster.yml
+
+- name: Platform add-ons
+  ansible.builtin.import_playbook: 02-platform.yml
+
+- name: Deploy MDS - develop namespace
+  ansible.builtin.import_playbook: 03-deploy-mds.yml
+  vars:
+    mds_env: develop
+
+- name: Deploy MDS - staging namespace
+  ansible.builtin.import_playbook: 03-deploy-mds.yml
+  vars:
+    mds_env: staging
+
+- name: Verify develop
+  ansible.builtin.import_playbook: verify.yml
+  vars:
+    mds_env: develop
+
+- name: Verify staging
+  ansible.builtin.import_playbook: verify.yml
+  vars:
+    mds_env: staging

@@ -1,0 +1,258 @@
+---
+apiVersion: v1
+kind: Namespace
+metadata:
+  name: {{ keycloak_namespace }}
+  labels: { app.kubernetes.io/part-of: openg2p-mds }
+---
+apiVersion: v1
+kind: Secret
+metadata:
+  name: keycloak-admin
+  namespace: {{ keycloak_namespace }}
+type: Opaque
+stringData:
+  KC_BOOTSTRAP_ADMIN_USERNAME: {{ keycloak_admin_user | to_json }}
+  KC_BOOTSTRAP_ADMIN_PASSWORD: {{ keycloak_admin_password | to_json }}
+---
+apiVersion: v1
+kind: Secret
+metadata:
+  name: keycloak-postgres
+  namespace: {{ keycloak_namespace }}
+type: Opaque
+stringData:
+  POSTGRES_USER: keycloak
+  POSTGRES_PASSWORD: {{ keycloak_db_password | to_json }}
+  POSTGRES_DB: keycloak
+---
+apiVersion: v1
+kind: Service
+metadata:
+  name: keycloak-postgres
+  namespace: {{ keycloak_namespace }}
+  labels: { app.kubernetes.io/name: keycloak-postgres, app.kubernetes.io/part-of: openg2p-mds }
+spec:
+  type: ClusterIP
+  selector: { app.kubernetes.io/name: keycloak-postgres }
+  ports:
+    - { name: postgres, port: 5432, targetPort: 5432 }
+---
+apiVersion: apps/v1
+kind: StatefulSet
+metadata:
+  name: keycloak-postgres
+  namespace: {{ keycloak_namespace }}
+  labels: { app.kubernetes.io/name: keycloak-postgres, app.kubernetes.io/part-of: openg2p-mds }
+spec:
+  serviceName: keycloak-postgres
+  replicas: 1
+  selector:
+    matchLabels: { app.kubernetes.io/name: keycloak-postgres }
+  template:
+    metadata:
+      labels: { app.kubernetes.io/name: keycloak-postgres, app.kubernetes.io/part-of: openg2p-mds }
+    spec:
+      securityContext:
+        fsGroup: 999
+      terminationGracePeriodSeconds: 60
+      containers:
+        - name: postgres
+          image: {{ keycloak_postgres_image }}
+          imagePullPolicy: IfNotPresent
+          ports:
+            - { name: postgres, containerPort: 5432 }
+          envFrom:
+            - secretRef: { name: keycloak-postgres }
+          env:
+            - name: PGDATA
+              value: /var/lib/postgresql/data/pgdata
+          readinessProbe:
+            exec:
+              command: ["sh", "-c", "pg_isready -U \"$POSTGRES_USER\" -d \"$POSTGRES_DB\""]
+            initialDelaySeconds: 5
+            periodSeconds: 10
+          livenessProbe:
+            exec:
+              command: ["sh", "-c", "pg_isready -U \"$POSTGRES_USER\" -d \"$POSTGRES_DB\""]
+            initialDelaySeconds: 30
+            periodSeconds: 20
+            failureThreshold: 6
+          resources: {{ keycloak_postgres_resources | to_json }}
+          volumeMounts:
+            - { name: data, mountPath: /var/lib/postgresql/data }
+  volumeClaimTemplates:
+    - metadata:
+        name: data
+      spec:
+        accessModes: ["ReadWriteOnce"]
+        storageClassName: {{ mds_storage_class }}
+        resources:
+          requests:
+            storage: {{ keycloak_postgres_storage }}
+---
+apiVersion: v1
+kind: Service
+metadata:
+  name: keycloak
+  namespace: {{ keycloak_namespace }}
+  labels: { app.kubernetes.io/name: keycloak, app.kubernetes.io/part-of: openg2p-mds }
+spec:
+  type: ClusterIP
+  selector: { app.kubernetes.io/name: keycloak }
+  ports:
+    - { name: http, port: 8080, targetPort: 8080 }
+---
+apiVersion: apps/v1
+kind: Deployment
+metadata:
+  name: keycloak
+  namespace: {{ keycloak_namespace }}
+  labels: { app.kubernetes.io/name: keycloak, app.kubernetes.io/part-of: openg2p-mds }
+spec:
+  replicas: 1
+  # One instance with a local cache: never run two side by side.
+  strategy: { type: Recreate }
+  selector:
+    matchLabels: { app.kubernetes.io/name: keycloak }
+  template:
+    metadata:
+      labels: { app.kubernetes.io/name: keycloak, app.kubernetes.io/part-of: openg2p-mds }
+    spec:
+      containers:
+        - name: keycloak
+          image: {{ keycloak_image }}
+          imagePullPolicy: IfNotPresent
+          args: ["start"]
+          envFrom:
+            - secretRef: { name: keycloak-admin }
+          env:
+            - { name: KC_DB, value: postgres }
+            - { name: KC_DB_URL, value: "jdbc:postgresql://keycloak-postgres:5432/keycloak" }
+            - name: KC_DB_USERNAME
+              valueFrom: { secretKeyRef: { name: keycloak-postgres, key: POSTGRES_USER } }
+            - name: KC_DB_PASSWORD
+              valueFrom: { secretKeyRef: { name: keycloak-postgres, key: POSTGRES_PASSWORD } }
+            # Public URL (admin console, default issuer). Realms on another public name set
+            # their own frontendUrl. Back-channel calls from the MDS pods use the service URL.
+            - { name: KC_HOSTNAME, value: "https://{{ keycloak_host }}" }
+            - { name: KC_HOSTNAME_BACKCHANNEL_DYNAMIC, value: "true" }
+            - { name: KC_HTTP_ENABLED, value: "true" }
+            - { name: KC_PROXY_HEADERS, value: xforwarded }
+            - { name: KC_HEALTH_ENABLED, value: "true" }
+            - { name: KC_CACHE, value: local }
+            - { name: JAVA_OPTS_KC_HEAP, value: "-XX:MaxRAMPercentage=65 -XX:InitialRAMPercentage=40" }
+          ports:
+            - { name: http, containerPort: 8080 }
+            - { name: management, containerPort: 9000 }
+          startupProbe:
+            httpGet: { path: /health/started, port: 9000 }
+            periodSeconds: 5
+            failureThreshold: 60
+          readinessProbe:
+            httpGet: { path: /health/ready, port: 9000 }
+            periodSeconds: 10
+            timeoutSeconds: 5
+          livenessProbe:
+            httpGet: { path: /health/live, port: 9000 }
+            periodSeconds: 30
+            timeoutSeconds: 5
+            failureThreshold: 3
+          resources: {{ keycloak_resources | to_json }}
+          securityContext:
+            runAsNonRoot: true
+            allowPrivilegeEscalation: false
+{% set kc_hosts = [{'host': keycloak_host, 'tls_cluster_issuer': keycloak_tls_cluster_issuer}] + keycloak_extra_hosts %}
+{% for h in kc_hosts %}
+---
+apiVersion: networking.k8s.io/v1
+kind: Ingress
+metadata:
+  name: keycloak-{{ loop.index0 }}
+  namespace: {{ keycloak_namespace }}
+  annotations:
+    cert-manager.io/cluster-issuer: {{ h.tls_cluster_issuer }}
+    nginx.ingress.kubernetes.io/ssl-redirect: "true"
+    # Keycloak's cookies and tokens make large headers.
+    nginx.ingress.kubernetes.io/proxy-buffer-size: "128k"
+spec:
+  ingressClassName: nginx
+  tls:
+    - hosts: [{{ h.host }}]
+      secretName: keycloak-{{ loop.index0 }}-tls
+  rules:
+    - host: {{ h.host }}
+      http:
+        paths:
+          - path: /
+            pathType: Prefix
+            backend:
+              service: { name: keycloak, port: { number: 8080 } }
+{% endfor %}
+---
+apiVersion: networking.k8s.io/v1
+kind: NetworkPolicy
+metadata:
+  name: default-deny-ingress
+  namespace: {{ keycloak_namespace }}
+spec:
+  podSelector: {}
+  policyTypes: [Ingress]
+---
+apiVersion: networking.k8s.io/v1
+kind: NetworkPolicy
+metadata:
+  name: allow-acme-solver-from-ingress
+  namespace: {{ keycloak_namespace }}
+spec:
+  podSelector:
+    matchLabels: { acme.cert-manager.io/http01-solver: "true" }
+  policyTypes: [Ingress]
+  ingress:
+    - from:
+        - namespaceSelector:
+            matchLabels: { kubernetes.io/metadata.name: {{ keycloak_ingress_controller_namespace }} }
+{% for cidr in keycloak_ingress_source_cidrs %}
+        - ipBlock: { cidr: {{ cidr }} }
+{% endfor %}
+      ports:
+        - { port: 8089, protocol: TCP }
+---
+apiVersion: networking.k8s.io/v1
+kind: NetworkPolicy
+metadata:
+  name: allow-keycloak-from-ingress-and-mds
+  namespace: {{ keycloak_namespace }}
+spec:
+  podSelector:
+    matchLabels: { app.kubernetes.io/name: keycloak }
+  policyTypes: [Ingress]
+  ingress:
+    - from:
+        - namespaceSelector:
+            matchLabels: { kubernetes.io/metadata.name: {{ keycloak_ingress_controller_namespace }} }
+{% for cidr in keycloak_ingress_source_cidrs %}
+        - ipBlock: { cidr: {{ cidr }} }
+{% endfor %}
+{% for ns in keycloak_mds_namespaces %}
+        - namespaceSelector:
+            matchLabels: { kubernetes.io/metadata.name: {{ ns }} }
+{% endfor %}
+      ports:
+        - { port: 8080, protocol: TCP }
+---
+apiVersion: networking.k8s.io/v1
+kind: NetworkPolicy
+metadata:
+  name: allow-postgres-from-keycloak
+  namespace: {{ keycloak_namespace }}
+spec:
+  podSelector:
+    matchLabels: { app.kubernetes.io/name: keycloak-postgres }
+  policyTypes: [Ingress]
+  ingress:
+    - from:
+        - podSelector:
+            matchLabels: { app.kubernetes.io/name: keycloak }
+      ports:
+        - { port: 5432, protocol: TCP }

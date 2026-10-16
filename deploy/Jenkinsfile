@@ -1,0 +1,300 @@
+// =============================================================================
+// deploy/: run the MDS Ansible playbooks on the MDS-dev-staging server (see deploy/RUNBOOK.md).
+//
+// This is NOT the repository's main pipeline (../Jenkinsfile builds the ECR images and
+// deploys them on every push). Use it for a separate, parameterized Pipeline job with
+// Script Path "deploy/Jenkinsfile": it builds no images, it only ships deploy/ansible/
+// to the server and runs the playbooks there (Keycloak, seed, verify, backup, rollback,
+// or a deploy with the images in environments/<env>/main.yml), the same way the runbook
+// does by hand ("Operating it"):
+//   - Ansible runs ON the server (~/MDS-service/ansible, venv ~/.venvs/ansible)
+//   - vault.yml files, hosts.ini and ~/.mds_vault_pass exist only on the server
+//     and are never overwritten by the sync.
+//
+// Jenkins setup:
+//   - Credential "mds-dev-staging-ssh" (SSH Username with private key):
+//     user "ubuntu", key = MDS-dev-staging.pem
+//   - A Linux agent with ssh, tar and curl
+//
+// Login is Keycloak (shared instance in namespace "keycloak", one realm per
+// environment, playbook 05-keycloak.yml). A deploy runs 05 for the target realm
+// first: it is idempotent and creates the mds-keycloak Secret that 03 needs.
+//
+// The server (t3.xlarge) is shared by develop, staging and Keycloak; deploys
+// replace pods in place, so expect a short outage while a deploy runs.
+// It has no Elastic IP: after a stop/start update MDS_HOST / MDS_IP below.
+// =============================================================================
+
+// No "def": a script binding, so it is visible inside the declarative stages.
+ENVS = [
+    develop: [ui: 'mds-dev.oanstaging.com', api: 'mds-api-dev.oanstaging.com',
+              keycloak: 'keycloak-dev.oanstaging.com', realm: 'mds-develop'],
+    staging: [ui: 'mds-staging.mda.test',   api: 'mds-api-staging.mda.test',
+              keycloak: 'keycloak.mda.test',           realm: 'mds-staging'],
+]
+
+// Runs a bash script on the server inside the Ansible venv, from ~/MDS-service/ansible.
+def onServer(String script) {
+    writeFile file: '.remote.sh', text: """set -euo pipefail
+source ~/.venvs/ansible/bin/activate
+cd ~/MDS-service/ansible
+export KUBECONFIG=~/.kube/config PATH=\$PATH:/var/lib/rancher/rke2/bin
+V="--vault-password-file \$HOME/.mds_vault_pass"
+${script}
+"""
+    withCredentials([sshUserPrivateKey(credentialsId: env.SSH_CREDENTIALS,
+                                       keyFileVariable: 'SSH_KEY', usernameVariable: 'SSH_USER')]) {
+        sh 'ssh -i "$SSH_KEY" $SSH_OPTS "$SSH_USER@$MDS_HOST" "bash -s" < .remote.sh'
+    }
+}
+
+// Waits until the API /ping, the UI /en and the realm's OIDC discovery answer through
+// the ingress, then checks that login hands the browser to this environment's realm and
+// that the API refuses a request without a token.
+// --resolve pins the names to the server, so staging (*.mda.test) works without DNS.
+def smokeTest(Map hosts) {
+    sh """
+        R="--resolve ${hosts.ui}:443:\$MDS_IP --resolve ${hosts.api}:443:\$MDS_IP --resolve ${hosts.keycloak}:443:\$MDS_IP"
+        for url in https://${hosts.api}/ping https://${hosts.ui}/en \
+                   https://${hosts.keycloak}/realms/${hosts.realm}/.well-known/openid-configuration; do
+          for i in \$(seq 1 20); do
+            code=\$(curl -sk -o /dev/null -w '%{http_code}' --max-time 10 \$R "\$url" || true)
+            case "\$code" in 200|302|307|308) echo "OK  \$url -> \$code"; continue 2 ;; esac
+            echo "... \$url -> \$code (attempt \$i/20)"; sleep 15
+          done
+          echo "FAIL \$url"; exit 1
+        done
+
+        login=\$(curl -sk -o /dev/null -w '%{redirect_url}' --max-time 10 \$R "https://${hosts.ui}/mock-iam/login?redirect_uri=/en")
+        case "\$login" in
+          https://${hosts.keycloak}/realms/${hosts.realm}/protocol/openid-connect/auth\\?*) echo "OK  login -> Keycloak realm ${hosts.realm}" ;;
+          *) echo "FAIL login redirects to '\$login', expected https://${hosts.keycloak}/realms/${hosts.realm}/..."; exit 1 ;;
+        esac
+
+        code=\$(curl -sk -o /dev/null -w '%{http_code}' --max-time 10 \$R -H 'Content-Type: application/json' \
+                -d '{}' "https://${hosts.api}/catalogue/get_lists")
+        [ "\$code" = 401 ] && echo "OK  API without token -> 401" || { echo "FAIL API without token -> \$code (expected 401)"; exit 1; }
+    """
+}
+
+// Keycloak server + this environment's realm, client, roles and users (idempotent).
+def keycloak(String envName) {
+    onServer("ansible-playbook playbooks/05-keycloak.yml -e '{\"keycloak_envs\": [\"${envName}\"]}' \$V")
+}
+
+// Pre-deploy dump onto the server (artifacts/backups/<env>), keeping the newest 5:
+// the server has ~13 GB free and every deploy adds one.
+def backup(String envName) {
+    onServer("""
+ansible-playbook playbooks/backup.yml -e mds_env=${envName} \$V
+ls -1t artifacts/backups/${envName}/*.dump 2>/dev/null | tail -n +6 | xargs -r rm -f
+""")
+}
+
+// Multibranch jobs: only these branches may touch the server. A plain Pipeline job has no BRANCH_NAME.
+def isDeployBranch() {
+    return !env.BRANCH_NAME || env.BRANCH_NAME in ['develop', 'main', 'master']
+}
+
+def approve(String envName, String action) {
+    timeout(time: 30, unit: 'MINUTES') {
+        input message: "Run '${action}' on ${envName}?", ok: "Yes, ${action} ${envName}"
+    }
+}
+
+pipeline {
+    agent any
+
+    options {
+        disableConcurrentBuilds()          // one node, one Ansible run at a time
+        buildDiscarder(logRotator(numToKeepStr: '30'))
+        timeout(time: 90, unit: 'MINUTES')
+    }
+
+    parameters {
+        choice(name: 'TARGET', choices: ['develop', 'staging', 'develop+staging'],
+               description: 'develop+staging = promote: develop first, then staging after approval')
+        choice(name: 'ACTION', choices: ['deploy', 'verify', 'seed', 'backup', 'rollback', 'keycloak'],
+               description: '''deploy   = backup, 05-keycloak, 03-deploy-mds, verify, smoke test
+verify   = verify.yml + smoke test
+seed     = 04-seed-catalogs (official ETH pack; re-run is safe, changed lists become DRAFTs)
+backup   = backup.yml (in-cluster job + pg_dump to the server)
+rollback = kubectl rollout undo of mds-api and mds-ui
+keycloak = 05-keycloak only: Keycloak server + the target realm, client, roles, users
+           (new users from mds_keycloak_users are created; existing passwords are kept)''')
+        booleanParam(name: 'BACKUP_BEFORE_DEPLOY', defaultValue: true,
+                     description: 'deploy only: run backup.yml first')
+        booleanParam(name: 'KEYCLOAK_BEFORE_DEPLOY', defaultValue: true,
+                     description: 'deploy only: run 05-keycloak for the target realm first (needed on the first deploy)')
+        booleanParam(name: 'SEED_AFTER_DEPLOY', defaultValue: false,
+                     description: 'deploy only: run 04-seed-catalogs after the deploy')
+        string(name: 'API_IMAGE', defaultValue: '', trim: true,
+               description: 'deploy only: override mds_api_image, e.g. openg2p/master-data-api:1.2.0. ' +
+                            'Blank = value from environments/<env>/main.yml. Commit the tag there afterwards, ' +
+                            'or the next deploy reverts it.')
+        string(name: 'UI_IMAGE', defaultValue: '', trim: true,
+               description: 'deploy only: override mds_ui_image (same rules as API_IMAGE)')
+    }
+
+    environment {
+        // No Elastic IP: both change on every stop/start of the instance.
+        MDS_HOST        = 'ec2-13-126-71-6.ap-south-1.compute.amazonaws.com'
+        MDS_IP          = '13.126.71.6'
+        SSH_CREDENTIALS = 'mds-dev-staging-ssh'
+        SSH_OPTS        = '-o StrictHostKeyChecking=accept-new -o BatchMode=yes -o ServerAliveInterval=30'
+    }
+
+    stages {
+        stage('Validate') {
+            steps {
+                script {
+                    [params.API_IMAGE, params.UI_IMAGE].each { img ->
+                        if (img && !(img ==~ /^[A-Za-z0-9._\/:@-]+$/)) {
+                            error "Invalid image reference: '${img}'"
+                        }
+                    }
+                    currentBuild.description = "${params.ACTION} -> ${params.TARGET}"
+                }
+            }
+        }
+
+        stage('Sync ansible/ to server') {
+            when { expression { isDeployBranch() } }
+            steps {
+                withCredentials([sshUserPrivateKey(credentialsId: env.SSH_CREDENTIALS,
+                                                   keyFileVariable: 'SSH_KEY', usernameVariable: 'SSH_USER')]) {
+                    // Keep a copy of the server's tree first (it may hold edits not yet in git),
+                    // then unpack the repo's ansible/ over it. Server-only files are excluded.
+                    sh '''
+                        ssh -i "$SSH_KEY" $SSH_OPTS "$SSH_USER@$MDS_HOST" '
+                          set -e
+                          mkdir -p ~/MDS-service ~/MDS-service-backups
+                          if [ -d ~/MDS-service/ansible ]; then
+                            tar -czf ~/MDS-service-backups/ansible-$(date -u +%Y%m%d-%H%M%S).tgz \
+                                -C ~/MDS-service --exclude=ansible/collections --exclude=ansible/artifacts ansible
+                            ls -1t ~/MDS-service-backups/ansible-*.tgz | tail -n +11 | xargs -r rm -f
+                          fi'
+
+                        tar -C deploy -czf - \
+                            --exclude='ansible/environments/*/vault.yml' \
+                            --exclude='ansible/inventory/group_vars/all/vault.yml' \
+                            --exclude='ansible/inventory/hosts.ini' \
+                            --exclude='ansible/.vault_pass' \
+                            --exclude='ansible/artifacts' \
+                            --exclude='ansible/collections' \
+                            ansible \
+                        | ssh -i "$SSH_KEY" $SSH_OPTS "$SSH_USER@$MDS_HOST" 'tar -xzf - -C ~/MDS-service'
+                    '''
+                }
+                // Strip Windows line endings (files may be committed from Windows).
+                onServer('''
+find . -path ./collections -prune -o -path ./artifacts -prune -o -type f ! -name vault.yml \
+     \\( -name '*.yml' -o -name '*.j2' -o -name '*.py' -o -name '*.js' -o -name '*.sql' -o -name '*.cfg' -o -name '*.ini' \\) \
+     -exec sed -i 's/\\r$//' {} +
+''')
+            }
+        }
+
+        stage('Syntax check') {
+            when { expression { isDeployBranch() } }
+            steps {
+                onServer('''
+for pb in 03-deploy-mds 04-seed-catalogs verify backup 05-keycloak; do
+  ansible-playbook playbooks/$pb.yml --syntax-check -e mds_env=develop
+done
+''')
+            }
+        }
+
+        stage('Run') {
+            when { expression { isDeployBranch() } }
+            steps {
+                script {
+                    def targets = params.TARGET == 'develop+staging' ? ['develop', 'staging'] : [params.TARGET]
+                    def overrides = ''
+                    if (params.API_IMAGE) { overrides += " -e mds_api_image=${params.API_IMAGE}" }
+                    if (params.UI_IMAGE)  { overrides += " -e mds_ui_image=${params.UI_IMAGE}" }
+
+                    for (String e : targets) {
+                        def envName = e
+                        stage("${params.ACTION}: ${envName}") {
+                            if (envName == 'staging' && params.ACTION in ['deploy', 'seed', 'rollback', 'keycloak']) {
+                                approve(envName, params.ACTION)
+                            }
+
+                            switch (params.ACTION) {
+                                case 'deploy':
+                                    if (params.BACKUP_BEFORE_DEPLOY) {
+                                        backup(envName)
+                                    }
+                                    if (params.KEYCLOAK_BEFORE_DEPLOY) {
+                                        keycloak(envName)
+                                    }
+                                    onServer("ansible-playbook playbooks/03-deploy-mds.yml -e mds_env=${envName}${overrides} \$V")
+                                    if (params.SEED_AFTER_DEPLOY) {
+                                        onServer("ansible-playbook playbooks/04-seed-catalogs.yml -e mds_env=${envName} \$V")
+                                    }
+                                    onServer("ansible-playbook playbooks/verify.yml -e mds_env=${envName} -e verify_external=false \$V")
+                                    smokeTest(ENVS[envName])
+                                    break
+                                case 'verify':
+                                    onServer("ansible-playbook playbooks/verify.yml -e mds_env=${envName} -e verify_external=false \$V")
+                                    smokeTest(ENVS[envName])
+                                    break
+                                case 'seed':
+                                    onServer("ansible-playbook playbooks/04-seed-catalogs.yml -e mds_env=${envName} \$V")
+                                    break
+                                case 'backup':
+                                    backup(envName)
+                                    break
+                                case 'keycloak':
+                                    keycloak(envName)
+                                    smokeTest(ENVS[envName])
+                                    break
+                                case 'rollback':
+                                    onServer("""
+kubectl -n ${envName} rollout undo deploy/mds-api
+kubectl -n ${envName} rollout undo deploy/mds-ui
+kubectl -n ${envName} rollout status deploy/mds-api --timeout=10m
+kubectl -n ${envName} rollout status deploy/mds-ui  --timeout=10m
+""")
+                                    smokeTest(ENVS[envName])
+                                    echo "Rolled back ${envName}. Revert the image tag in environments/${envName}/main.yml, " +
+                                         "or the next deploy rolls forward again. If a DB migration ran, restore the pre-deploy dump (RUNBOOK 13.3)."
+                                    break
+                            }
+                        }
+                    }
+                }
+            }
+        }
+    }
+
+    post {
+        failure {
+            script {
+                if (!isDeployBranch()) { return }
+                def targets = params.TARGET == 'develop+staging' ? ['develop', 'staging'] : [params.TARGET]
+                def diag = targets.collect { e ->
+                    """echo "===== ${e} ====="
+kubectl -n ${e} get pods -o wide || true
+kubectl -n ${e} get events --sort-by=.lastTimestamp | tail -n 25 || true"""
+                }.join('\n')
+                try {
+                    onServer("""
+kubectl describe node | sed -n '/Allocated resources/,/Events/p' || true
+${diag}
+echo "===== keycloak ====="
+kubectl -n keycloak get pods,certificate -o wide || true
+kubectl -n keycloak logs deploy/keycloak --tail=30 || true
+""")
+                } catch (err) {
+                    echo "Diagnostics failed: ${err}"
+                }
+            }
+        }
+        always {
+            sh 'rm -f .remote.sh'
+        }
+    }
+}

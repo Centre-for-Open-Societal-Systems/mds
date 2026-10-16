@@ -1,0 +1,7 @@
+---
+- name: Prepare cluster nodes (OS packages, kernel, swap)
+  hosts: k3s_cluster
+  become: true
+  gather_facts: true
+  roles:
+    - common

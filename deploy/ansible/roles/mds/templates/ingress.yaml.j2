@@ -1,0 +1,92 @@
+{% macro common_annotations() %}
+    cert-manager.io/cluster-issuer: {{ tls_cluster_issuer }}
+    nginx.ingress.kubernetes.io/ssl-redirect: "true"
+    nginx.ingress.kubernetes.io/proxy-body-size: {{ mds_ingress_proxy_body_size | to_json }}
+    nginx.ingress.kubernetes.io/proxy-read-timeout: "300"
+    nginx.ingress.kubernetes.io/proxy-send-timeout: "300"
+{% if mds_ingress_allowlist_cidrs | length > 0 %}
+    nginx.ingress.kubernetes.io/whitelist-source-range: {{ mds_ingress_allowlist_cidrs | join(',') | to_json }}
+{% endif %}
+{% if mds_ingress_basic_auth_enabled %}
+    nginx.ingress.kubernetes.io/auth-type: basic
+    nginx.ingress.kubernetes.io/auth-secret: mds-basic-auth
+    nginx.ingress.kubernetes.io/auth-realm: "OpenG2P MDS"
+{% endif %}
+{%- endmacro %}
+---
+apiVersion: networking.k8s.io/v1
+kind: Ingress
+metadata:
+  name: mds-ui
+  namespace: {{ mds_namespace }}
+  annotations:
+{{ common_annotations() }}
+spec:
+  ingressClassName: nginx
+  tls:
+    - hosts: [{{ mds_ui_host }}]
+      secretName: mds-ui-tls
+  rules:
+    - host: {{ mds_ui_host }}
+      http:
+        paths:
+{% if mds_standalone_mode %}
+          - path: /mock-iam
+            pathType: Prefix
+            backend:
+              service: { name: mds-mock-iam, port: { number: 8020 } }
+          # The UI's logout redirects the browser to IAM_URL (localhost:8020, the in-pod
+          # sidecar), which the browser cannot reach. Let mock-iam clear the cookies instead.
+          - path: /api/logout
+            pathType: Exact
+            backend:
+              service: { name: mds-mock-iam, port: { number: 8020 } }
+{% endif %}
+          - path: /
+            pathType: Prefix
+            backend:
+              service: { name: mds-ui, port: { number: 3000 } }
+---
+apiVersion: networking.k8s.io/v1
+kind: Ingress
+metadata:
+  name: mds-api
+  namespace: {{ mds_namespace }}
+  annotations:
+{{ common_annotations() }}
+spec:
+  ingressClassName: nginx
+  tls:
+    - hosts: [{{ mds_api_host }}]
+      secretName: mds-api-tls
+  rules:
+    - host: {{ mds_api_host }}
+      http:
+        paths:
+          - path: /
+            pathType: Prefix
+            backend:
+              service: { name: mds-api, port: { number: 8000 } }
+{% if mds_expose_minio_console %}
+---
+apiVersion: networking.k8s.io/v1
+kind: Ingress
+metadata:
+  name: mds-minio-console
+  namespace: {{ mds_namespace }}
+  annotations:
+{{ common_annotations() }}
+spec:
+  ingressClassName: nginx
+  tls:
+    - hosts: [{{ mds_minio_console_host }}]
+      secretName: mds-minio-console-tls
+  rules:
+    - host: {{ mds_minio_console_host }}
+      http:
+        paths:
+          - path: /
+            pathType: Prefix
+            backend:
+              service: { name: mds-minio, port: { number: 9001 } }
+{% endif %}

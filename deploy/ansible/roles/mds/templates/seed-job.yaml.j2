@@ -1,0 +1,93 @@
+---
+# Catalog seeding with the official OpenG2P country-pack loader (openg2p/master-data-db-seed).
+# Same behaviour as the geo-seed Job in the upstream chart: waits for the API's migration,
+# then loads code lists (+ domain themes) and the geography. Idempotent:
+# first load -> v1 PUBLISHED; changed pack -> DRAFT; unchanged pack -> nothing.
+apiVersion: batch/v1
+kind: Job
+metadata:
+  name: mds-seed
+  namespace: {{ mds_namespace }}
+  labels: { app.kubernetes.io/name: mds-seed, app.kubernetes.io/part-of: openg2p-mds }
+spec:
+  backoffLimit: 2
+  ttlSecondsAfterFinished: 86400
+  template:
+    metadata:
+      labels: { app.kubernetes.io/name: mds-seed, app.kubernetes.io/part-of: openg2p-mds }
+    spec:
+      restartPolicy: OnFailure
+{% if mds_image_pull_secret | length > 0 %}
+      imagePullSecrets:
+        - name: {{ mds_image_pull_secret }}
+{% endif %}
+      initContainers:
+        - name: wait-for-schema
+          image: {{ mds_postgres_image }}
+          env:
+            - name: PGHOST
+              value: mds-postgres
+            - name: PGUSER
+              valueFrom: { secretKeyRef: { name: mds-postgres, key: POSTGRES_USER } }
+            - name: PGPASSWORD
+              valueFrom: { secretKeyRef: { name: mds-postgres, key: POSTGRES_PASSWORD } }
+            - name: PGDATABASE
+              valueFrom: { secretKeyRef: { name: mds-postgres, key: POSTGRES_DB } }
+            # Must match CATALOGUE_SCHEMA_VERSION in master-data-api catalogue_sql.py.
+            - name: CATALOGUE_SCHEMA_VERSION
+              value: {{ mds_seed_schema_version | default(5) | string | to_json }}
+          command:
+            - sh
+            - -c
+            - |
+              i=0
+              until [ "$(psql -tAc "SELECT coalesce((SELECT int_value FROM g2p_catalogue_state WHERE key = 'schema_version'), 0) >= ${CATALOGUE_SCHEMA_VERSION}" 2>/dev/null)" = "t" ]; do
+                i=$((i+1)); [ "$i" -gt 200 ] && { echo "catalogue schema ${CATALOGUE_SCHEMA_VERSION} not ready after $((i*3))s"; exit 1; }
+                echo "waiting for the master-data migration (schema ${CATALOGUE_SCHEMA_VERSION})..."; sleep 3
+              done
+              echo "master-data schema is ready."
+      containers:
+        - name: seed
+          image: {{ mds_seed_image }}
+          imagePullPolicy: {{ mds_image_pull_policy | default("IfNotPresent") }}
+          command:
+            - python
+            - /seed/load_geo_pack.py
+            - --pack
+            - /openg2p-data/packs/{{ mds_seed_country_pack }}
+            - --load
+            - {{ mds_seed_load | join(',') | to_json }}
+{% if mds_seed_domains | length > 0 %}
+            - --domains
+            - {{ mds_seed_domains | join(',') | to_json }}
+{% endif %}
+          env:
+            - name: PACK_PUBLISH_INITIAL
+              value: {{ mds_seed_publish_initial | string | lower | to_json }}
+            - name: PACK_AUTO_PUBLISH
+              value: {{ mds_seed_auto_publish | string | lower | to_json }}
+            - name: PACK_OWNER_ORG
+              value: {{ mds_seed_owner_org | to_json }}
+            - name: AUDIT_MANAGER_URL
+              value: ""
+            - name: PGHOST
+              value: mds-postgres
+            - name: PGPORT
+              value: "5432"
+            - name: MDS_DB
+              valueFrom: { secretKeyRef: { name: mds-postgres, key: POSTGRES_DB } }
+            - name: PGUSER
+              valueFrom: { secretKeyRef: { name: mds-postgres, key: POSTGRES_USER } }
+            - name: PGPASSWORD
+              valueFrom: { secretKeyRef: { name: mds-postgres, key: POSTGRES_PASSWORD } }
+            - name: S3_ENDPOINT
+              value: http://mds-minio:9000
+            - name: S3_BUCKET
+              value: {{ mds_minio_bucket | to_json }}
+            - name: BOUNDARY_BASE_URL
+              value: http://mds-minio:9000
+            - name: S3_ACCESS_KEY
+              valueFrom: { secretKeyRef: { name: mds-minio, key: MINIO_ROOT_USER } }
+            - name: S3_SECRET_KEY
+              valueFrom: { secretKeyRef: { name: mds-minio, key: MINIO_ROOT_PASSWORD } }
+          resources: {{ mds_seed_resources | to_json }}

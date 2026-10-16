@@ -1,0 +1,24 @@
+# Copy to terraform.tfvars and edit.
+# Same region as the Gen2 dev RKE2 cluster (far/live/crop) to keep registry -> MDS latency low.
+aws_region  = "ap-south-1"
+environment = "staging"
+
+# Keep this different from the dev cluster VPC (its nodes are on 10.0.1.x) so VPC peering stays possible later.
+vpc_cidr           = "10.40.0.0/16"
+public_subnet_cidr = "10.40.1.0/24"
+
+# REQUIRED: your office / VPN egress IPs. SSH and the Kubernetes API are only open to these.
+admin_cidrs = ["203.0.113.10/32"]
+
+# Who can reach the MDS UI/API over HTTP(S). Standalone mode has no login screen,
+# so prefer a restricted list (or enable basic auth in Ansible group_vars).
+# Include the dev cluster's egress IP(s) so far/live/crop registries can call the API (RUNBOOK §19).
+public_ingress_cidrs = ["0.0.0.0/0"]
+
+ssh_public_key_path  = "~/.ssh/mds.pub"
+ssh_private_key_path = "~/.ssh/mds"
+
+server_instance_type = "t3.large"  # 2 vCPU / 8 GiB
+agent_instance_type  = "t3.large"
+agent_count          = 1
+root_volume_size_gb  = 80

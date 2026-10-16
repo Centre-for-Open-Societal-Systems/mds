@@ -1,0 +1,91 @@
+---
+# Restore PostgreSQL from a pg_dump custom-format file on the controller.
+# DESTRUCTIVE: existing catalog data is dropped and replaced (pg_restore -c).
+#   ansible-playbook playbooks/restore.yml -e mds_env=staging -e backup_file=artifacts/backups/staging/mds_backup_20261014-010000.dump -e confirm=RESTORE
+- name: Restore MDS PostgreSQL
+  hosts: kube_control[0]
+  become: true
+  gather_facts: false
+  vars:
+    ansible_python_interpreter: "{{ k8s_venv }}/bin/python"
+  environment:
+    K8S_AUTH_KUBECONFIG: "{{ kubeconfig_path }}"
+    KUBECONFIG: "{{ kubeconfig_path }}"
+  pre_tasks:
+    - name: Load target environment
+      ansible.builtin.import_tasks: tasks/load-env.yml
+  tasks:
+    - name: Require explicit confirmation and a backup file
+      ansible.builtin.assert:
+        that:
+          - confirm | default('') == 'RESTORE'
+          - backup_file is defined
+        fail_msg: "Pass -e backup_file=<path> -e confirm=RESTORE"
+
+    - name: Upload dump to control host
+      ansible.builtin.copy:
+        src: "{{ backup_file }}"
+        dest: /tmp/mds_restore.dump
+        mode: "0600"
+
+    - name: Find PostgreSQL pod
+      kubernetes.core.k8s_info:
+        kind: Pod
+        namespace: "{{ mds_namespace }}"
+        label_selectors: ["app.kubernetes.io/name=mds-postgres"]
+        field_selectors: ["status.phase=Running"]
+      register: pg
+      failed_when: pg.resources | length == 0
+
+    - name: Copy dump into the PostgreSQL pod
+      kubernetes.core.k8s_cp:
+        namespace: "{{ mds_namespace }}"
+        pod: "{{ pg.resources[0].metadata.name }}"
+        local_path: /tmp/mds_restore.dump
+        remote_path: /tmp/mds_restore.dump
+        state: to_pod
+
+    - name: Validate archive before touching data
+      kubernetes.core.k8s_exec:
+        namespace: "{{ mds_namespace }}"
+        pod: "{{ pg.resources[0].metadata.name }}"
+        command: pg_restore --list /tmp/mds_restore.dump
+
+    - name: Stop API (no writes during restore)
+      ansible.builtin.command: kubectl -n {{ mds_namespace }} scale deploy/mds-api --replicas=0
+      changed_when: true
+
+    - name: Restore
+      block:
+        - name: Wait for API pods to terminate
+          ansible.builtin.command: >-
+            kubectl -n {{ mds_namespace }} wait --for=delete pod -l app.kubernetes.io/name=mds-api --timeout=180s
+          changed_when: false
+          failed_when: false
+
+        - name: pg_restore (clean + recreate objects)
+          kubernetes.core.k8s_exec:
+            namespace: "{{ mds_namespace }}"
+            pod: "{{ pg.resources[0].metadata.name }}"
+            command: >-
+              pg_restore -U {{ mds_postgres_user }} -d {{ mds_postgres_db }}
+              --clean --if-exists --no-owner --exit-on-error /tmp/mds_restore.dump
+      always:
+        - name: Start API again
+          ansible.builtin.command: kubectl -n {{ mds_namespace }} scale deploy/mds-api --replicas={{ mds_api_replicas }}
+          changed_when: true
+
+        - name: Wait for API rollout
+          ansible.builtin.command: kubectl -n {{ mds_namespace }} rollout status deploy/mds-api --timeout=300s
+          changed_when: false
+
+        - name: Clean up dump files
+          kubernetes.core.k8s_exec:
+            namespace: "{{ mds_namespace }}"
+            pod: "{{ pg.resources[0].metadata.name }}"
+            command: rm -f /tmp/mds_restore.dump
+
+        - name: Clean up control host copy
+          ansible.builtin.file:
+            path: /tmp/mds_restore.dump
+            state: absent
