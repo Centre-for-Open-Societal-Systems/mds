@@ -1,0 +1,97 @@
+{% if mds_backup_enabled %}
+---
+apiVersion: v1
+kind: PersistentVolumeClaim
+metadata:
+  name: mds-backups
+  namespace: {{ mds_namespace }}
+  labels: { app.kubernetes.io/part-of: openg2p-mds }
+spec:
+  accessModes: ["ReadWriteOnce"]
+  storageClassName: {{ mds_storage_class }}
+  resources:
+    requests:
+      storage: {{ mds_backup_storage }}
+---
+# Daily backup (README 6.6):
+#   1. pg_dump -Fc of master_data      -> /backups/postgres/mds_backup_<ts>.dump
+#   2. mc mirror of the GeoJSON bucket -> /backups/minio/{{ mds_minio_bucket }}
+#   3. retention cleanup; optional off-cluster copy to S3
+apiVersion: batch/v1
+kind: CronJob
+metadata:
+  name: mds-backup
+  namespace: {{ mds_namespace }}
+  labels: { app.kubernetes.io/name: mds-backup, app.kubernetes.io/part-of: openg2p-mds }
+spec:
+  schedule: {{ mds_backup_schedule | to_json }}
+  concurrencyPolicy: Forbid
+  successfulJobsHistoryLimit: 3
+  failedJobsHistoryLimit: 5
+  jobTemplate:
+    spec:
+      backoffLimit: 2
+      activeDeadlineSeconds: 3600
+      template:
+        metadata:
+          labels: { app.kubernetes.io/name: mds-backup, app.kubernetes.io/part-of: openg2p-mds }
+        spec:
+          restartPolicy: Never
+          securityContext:
+            fsGroup: 999
+          initContainers:
+            - name: pg-dump
+              image: {{ mds_postgres_image }}
+              command: ["/bin/bash", "-c"]
+              args:
+                - |
+                  set -euo pipefail
+                  mkdir -p /backups/postgres
+                  TS=$(date -u +%Y%m%d-%H%M%S)
+                  OUT=/backups/postgres/mds_backup_${TS}.dump
+                  pg_dump -h mds-postgres -U "$POSTGRES_USER" -d "$POSTGRES_DB" -F c -b -f "${OUT}.partial"
+                  mv "${OUT}.partial" "$OUT"
+                  pg_restore --list "$OUT" > /dev/null   # verify archive is readable
+                  ls -lh "$OUT"
+                  find /backups/postgres -name 'mds_backup_*.dump' -mtime +{{ mds_backup_retention_days }} -print -delete
+              envFrom:
+                - secretRef: { name: mds-postgres }
+              env:
+                - name: PGPASSWORD
+                  valueFrom: { secretKeyRef: { name: mds-postgres, key: POSTGRES_PASSWORD } }
+              volumeMounts:
+                - { name: backups, mountPath: /backups }
+          containers:
+            - name: minio-mirror
+              image: {{ mds_mc_image }}
+              command: ["/bin/sh", "-c"]
+              args:
+                - |
+                  set -e
+                  mc alias set local http://mds-minio:9000 "$MINIO_ROOT_USER" "$MINIO_ROOT_PASSWORD"
+                  mkdir -p /backups/minio
+                  mc mirror --overwrite --remove local/{{ mds_minio_bucket }} /backups/minio/{{ mds_minio_bucket }}
+{% if mds_backup_remote_enabled %}
+                  mc alias set remote {{ mds_backup_remote_endpoint }} "$REMOTE_ACCESS_KEY" "$REMOTE_SECRET_KEY"
+                  mc mirror --overwrite /backups/postgres remote/{{ mds_backup_remote_bucket }}/{{ mds_environment }}/postgres
+                  mc mirror --overwrite /backups/minio remote/{{ mds_backup_remote_bucket }}/{{ mds_environment }}/minio
+{% endif %}
+                  echo "backup complete"
+              envFrom:
+                - secretRef: { name: mds-minio }
+              env:
+                - name: MC_CONFIG_DIR
+                  value: /tmp/.mc
+{% if mds_backup_remote_enabled %}
+                - name: REMOTE_ACCESS_KEY
+                  valueFrom: { secretKeyRef: { name: mds-backup-remote, key: ACCESS_KEY } }
+                - name: REMOTE_SECRET_KEY
+                  valueFrom: { secretKeyRef: { name: mds-backup-remote, key: SECRET_KEY } }
+{% endif %}
+              volumeMounts:
+                - { name: backups, mountPath: /backups }
+          volumes:
+            - name: backups
+              persistentVolumeClaim:
+                claimName: mds-backups
+{% endif %}

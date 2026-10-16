@@ -1,0 +1,83 @@
+---
+# On-demand backup:
+#   1. triggers the in-cluster CronJob now (pg_dump + MinIO mirror onto the backup PVC / remote S3)
+#   2. takes a fresh pg_dump and downloads it to the controller (artifacts/backups/)
+# Usage: ansible-playbook playbooks/backup.yml -e mds_env=develop   (or staging)
+- name: On-demand MDS backup
+  hosts: kube_control[0]
+  become: true
+  gather_facts: false
+  vars:
+    ansible_python_interpreter: "{{ k8s_venv }}/bin/python"
+    backup_ts: "{{ lookup('pipe', 'date -u +%Y%m%d-%H%M%S') }}"
+  environment:
+    K8S_AUTH_KUBECONFIG: "{{ kubeconfig_path }}"
+    KUBECONFIG: "{{ kubeconfig_path }}"
+  pre_tasks:
+    - name: Load target environment
+      ansible.builtin.import_tasks: tasks/load-env.yml
+  tasks:
+    - name: Pin timestamp
+      ansible.builtin.set_fact:
+        ts: "{{ backup_ts }}"
+        dump_name: "mds_backup_{{ backup_ts }}.dump"
+
+    - name: Trigger in-cluster backup job from CronJob
+      ansible.builtin.command: >-
+        kubectl -n {{ mds_namespace }} create job mds-backup-manual-{{ ts | lower }} --from=cronjob/mds-backup
+      when: mds_backup_enabled
+      changed_when: true
+
+    - name: Find PostgreSQL pod
+      kubernetes.core.k8s_info:
+        kind: Pod
+        namespace: "{{ mds_namespace }}"
+        label_selectors: ["app.kubernetes.io/name=mds-postgres"]
+        field_selectors: ["status.phase=Running"]
+      register: pg
+      failed_when: pg.resources | length == 0
+
+    - name: pg_dump inside the PostgreSQL pod
+      kubernetes.core.k8s_exec:
+        namespace: "{{ mds_namespace }}"
+        pod: "{{ pg.resources[0].metadata.name }}"
+        command: pg_dump -U {{ mds_postgres_user }} -d {{ mds_postgres_db }} -F c -b -f /tmp/{{ dump_name }}
+
+    - name: Copy dump out of the pod
+      kubernetes.core.k8s_cp:
+        namespace: "{{ mds_namespace }}"
+        pod: "{{ pg.resources[0].metadata.name }}"
+        remote_path: "/tmp/{{ dump_name }}"
+        local_path: "/tmp/{{ dump_name }}"
+        state: from_pod
+
+    - name: Remove dump from the pod
+      kubernetes.core.k8s_exec:
+        namespace: "{{ mds_namespace }}"
+        pod: "{{ pg.resources[0].metadata.name }}"
+        command: rm -f /tmp/{{ dump_name }}
+
+    - name: Ensure local backup dir
+      ansible.builtin.file:
+        path: "{{ mds_local_backup_dir }}"
+        state: directory
+        mode: "0700"
+      delegate_to: localhost
+      become: false
+
+    - name: Download dump to controller
+      ansible.builtin.fetch:
+        src: "/tmp/{{ dump_name }}"
+        dest: "{{ mds_local_backup_dir }}/{{ dump_name }}"
+        flat: true
+
+    - name: Clean up control host copy
+      ansible.builtin.file:
+        path: "/tmp/{{ dump_name }}"
+        state: absent
+
+    - name: Done
+      ansible.builtin.debug:
+        msg:
+          - "PostgreSQL dump: {{ mds_local_backup_dir }}/{{ dump_name }}"
+          - "In-cluster job: kubectl -n {{ mds_namespace }} logs job/mds-backup-manual-{{ ts | lower }} --all-containers"

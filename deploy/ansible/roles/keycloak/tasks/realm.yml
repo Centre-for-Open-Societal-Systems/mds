@@ -1,0 +1,110 @@
+---
+# One MDS environment (kc_env_name): realm, confidential client, roles, users.
+- name: "{{ kc_env_name }}: settings"
+  ansible.builtin.set_fact:
+    kc_e: "{{ vars['kc_env_' ~ kc_env_name] }}"
+
+- name: "{{ kc_env_name }}: realm values"
+  ansible.builtin.set_fact:
+    kc_realm: "{{ kc_e.mds_keycloak_realm | default('mds-' ~ kc_env_name) }}"
+    kc_public_url: "{{ (kc_e.mds_keycloak_public_url | default('https://' ~ keycloak_host)) | regex_replace('/$', '') }}"
+    kc_users: "{{ kc_e.mds_keycloak_users | default(mds_keycloak_users) }}"
+
+- name: "{{ kc_env_name }}: read existing client secret and user passwords"
+  kubernetes.core.k8s_info:
+    kind: Secret
+    namespace: "{{ kc_e.mds_namespace }}"
+    name: "{{ item }}"
+  loop: [mds-keycloak, mds-keycloak-users]
+  register: kc_env_secrets
+  no_log: true
+
+- name: "{{ kc_env_name }}: reuse or generate client secret"
+  ansible.builtin.set_fact:
+    kc_client_secret: >-
+      {{ (kc_env_secrets.results[0].resources[0].data.KEYCLOAK_CLIENT_SECRET | b64decode)
+         if kc_env_secrets.results[0].resources | length > 0
+         else lookup('ansible.builtin.password', '/dev/null', length=40, chars=['ascii_letters', 'digits']) }}
+    kc_user_passwords: {}
+  no_log: true
+
+- name: "{{ kc_env_name }}: reuse or generate user passwords"
+  ansible.builtin.set_fact:
+    kc_user_passwords: >-
+      {{ kc_user_passwords | combine({item.username:
+           (existing[item.username] | b64decode) if item.username in existing
+           else lookup('ansible.builtin.password', '/dev/null', length=16, chars=['ascii_letters', 'digits'])}) }}
+  vars:
+    existing: "{{ (kc_env_secrets.results[1].resources[0].data | default({})) if kc_env_secrets.results[1].resources | length > 0 else {} }}"
+  loop: "{{ kc_users }}"
+  loop_control:
+    label: "{{ item.username }}"
+  no_log: true
+
+- name: "{{ kc_env_name }}: users with their passwords"
+  ansible.builtin.set_fact:
+    kc_users_full: "{{ (kc_users_full if ansible_loop.index0 > 0 else []) + [item | combine({'password': kc_user_passwords[item.username]})] }}"
+  loop: "{{ kc_users }}"
+  loop_control:
+    extended: true
+    label: "{{ item.username }}"
+  no_log: true
+
+- name: "{{ kc_env_name }}: store client secret and initial user passwords"
+  kubernetes.core.k8s:
+    state: present
+    apply: true
+    definition:
+      - apiVersion: v1
+        kind: Secret
+        metadata:
+          name: mds-keycloak
+          namespace: "{{ kc_e.mds_namespace }}"
+          labels: { app.kubernetes.io/part-of: openg2p-mds }
+        type: Opaque
+        stringData:
+          KEYCLOAK_CLIENT_SECRET: "{{ kc_client_secret }}"
+      - apiVersion: v1
+        kind: Secret
+        metadata:
+          name: mds-keycloak-users
+          namespace: "{{ kc_e.mds_namespace }}"
+          labels: { app.kubernetes.io/part-of: openg2p-mds }
+          annotations:
+            description: >-
+              Initial passwords of the users created by playbook 05-keycloak.yml in realm {{ kc_realm }}.
+              A password changed later in Keycloak is not updated here.
+        type: Opaque
+        stringData: "{{ kc_user_passwords }}"
+  no_log: true
+
+- name: "{{ kc_env_name }}: configure Keycloak realm {{ kc_realm }}"
+  ansible.builtin.script:
+    cmd: "{{ playbook_dir }}/../files/keycloak/kc_bootstrap.py"
+    executable: python3
+  environment:
+    KC_BOOTSTRAP_CONFIG: >-
+      {{ {
+        'url': keycloak_admin_api_url,
+        'admin_user': keycloak_admin_user,
+        'admin_password': keycloak_admin_password,
+        'realm': kc_realm,
+        'display_name': 'Master Data Catalogue (' ~ kc_env_name ~ ')',
+        'frontend_url': (kc_public_url if kc_public_url != 'https://' ~ keycloak_host else ''),
+        'realm_settings': keycloak_realm_settings,
+        'client': {'client_id': mds_keycloak_client_id_mds, 'secret': kc_client_secret, 'ui_url': 'https://' ~ kc_e.mds_ui_host},
+        'roles': mds_keycloak_roles,
+        'users': kc_users_full,
+      } | to_json }}
+  # Not no_log, so a failure shows Keycloak's error. The secrets are only in the task
+  # environment, which the result does not echo, and the script never prints them.
+  register: kc_bootstrap
+  changed_when: (kc_bootstrap.stdout | from_json).changed
+
+- name: "{{ kc_env_name }}: result"
+  ansible.builtin.debug:
+    msg: "{{ (kc_bootstrap.stdout | from_json).actions or ['no changes'] }}"
+
+- name: "{{ kc_env_name }}: remember for the summary"
+  ansible.builtin.set_fact:
+    keycloak_realm_summary: "{{ keycloak_realm_summary | default([]) + [kc_realm ~ ' -> ' ~ kc_public_url ~ '/realms/' ~ kc_realm] }}"

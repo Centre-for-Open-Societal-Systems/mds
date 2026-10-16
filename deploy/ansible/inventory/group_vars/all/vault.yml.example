@@ -1,0 +1,14 @@
+---
+# SHARED secrets (all environments). Optional file.
+# Per-environment secrets (PostgreSQL, MinIO, basic auth, Keycloak) live in
+# environments/<env>/vault.yml instead.
+#   ansible-vault encrypt inventory/group_vars/all/vault.yml
+
+# Only used when mds_backup_remote_enabled: true
+vault_backup_remote_access_key: ""
+vault_backup_remote_secret_key: ""
+
+# Only used when mds_image_pull_secret is set
+vault_registry_server: ""
+vault_registry_username: ""
+vault_registry_password: ""

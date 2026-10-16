@@ -1,0 +1,46 @@
+---
+# Shared Keycloak for the MDS environments (playbook 05-keycloak.yml).
+# Server-specific values live in environments/keycloak/main.yml.
+keycloak_namespace: keycloak
+keycloak_image: quay.io/keycloak/keycloak:26.7.5
+keycloak_postgres_image: "{{ mds_postgres_image }}"
+
+# Public URL of the admin console and the default frontend URL of every realm.
+keycloak_host: keycloak.example.gov
+keycloak_tls_cluster_issuer: letsencrypt-prod
+# More public names for the same Keycloak, e.g. one per environment's DNS zone:
+#   - { host: keycloak.mda.test, tls_cluster_issuer: selfsigned }
+keycloak_extra_hosts: []
+
+keycloak_admin_user: kc-admin
+
+keycloak_resources:
+  requests: { cpu: 250m, memory: 768Mi }
+  limits: { cpu: "2", memory: 1536Mi }
+keycloak_postgres_resources:
+  requests: { cpu: 50m, memory: 128Mi }
+  limits: { cpu: 500m, memory: 512Mi }
+keycloak_postgres_storage: 5Gi
+
+# NetworkPolicy: who may reach Keycloak's HTTP port (the ingress controller and the
+# node itself, where Ansible runs). The MDS namespaces are always allowed.
+keycloak_ingress_controller_namespace: kube-system
+keycloak_ingress_source_cidrs: []
+
+# Environments whose realm this run configures (each needs mds_keycloak_enabled in
+# environments/<env>/main.yml). Narrow it to touch one realm, e.g. -e '{"keycloak_envs":["develop"]}'.
+keycloak_envs: "{{ mds_envs }}"
+
+# Applied to every MDS realm.
+keycloak_realm_settings:
+  loginWithEmailAllowed: true
+  duplicateEmailsAllowed: false
+  resetPasswordAllowed: false
+  rememberMe: false
+  bruteForceProtected: true
+  failureFactor: 10
+  sslRequired: external
+  accessTokenLifespan: 3600          # the UI has no silent refresh: 1 h, then Keycloak SSO re-login
+  ssoSessionIdleTimeout: 28800       # 8 h
+  ssoSessionMaxLifespan: 43200       # 12 h
+  passwordPolicy: "length(12) and notUsername"

@@ -1,0 +1,29 @@
+---
+- name: Download k3s installer
+  ansible.builtin.get_url:
+    url: https://get.k3s.io
+    dest: /usr/local/bin/k3s-install.sh
+    mode: "0755"
+
+- name: Install k3s agent and join the cluster
+  ansible.builtin.command: /usr/local/bin/k3s-install.sh
+  environment:
+    INSTALL_K3S_VERSION: "{{ k3s_version }}"
+    K3S_URL: "https://{{ k3s_server_private_ip }}:6443"
+    K3S_TOKEN: "{{ hostvars[groups['k3s_server'][0]]['k3s_node_token'] }}"
+    INSTALL_K3S_EXEC: >-
+      agent
+      --node-ip {{ node_private_ip | default(ansible_default_ipv4.address) }}
+      {{ k3s_extra_agent_args }}
+  args:
+    creates: /usr/local/bin/k3s-agent-uninstall.sh
+  no_log: true
+
+- name: Wait until agent node is Ready
+  ansible.builtin.command: k3s kubectl wait --for=condition=Ready node/{{ ansible_hostname }} --timeout=300s
+  delegate_to: "{{ groups['k3s_server'][0] }}"
+  changed_when: false
+  retries: 10
+  delay: 15
+  register: agent_ready
+  until: agent_ready.rc == 0

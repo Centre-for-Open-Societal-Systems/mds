@@ -1,0 +1,212 @@
+---
+# =============================================================================
+# OpenG2P MDS Standalone on Kubernetes - global settings
+# These are SHARED defaults. Per-environment overrides (namespace, hostnames,
+# sizing, secrets) live in ansible/environments/<env>/{main,vault}.yml and are
+# loaded by every app playbook via `-e mds_env=<env>`.
+# =============================================================================
+
+# Environments deployed on this cluster, one Kubernetes namespace each.
+mds_envs:
+  - develop
+  - staging
+
+# -----------------------------------------------------------------------------
+# Kubernetes cluster (k3s)
+# -----------------------------------------------------------------------------
+k3s_version: v1.30.6+k3s1
+k3s_server_ip: "{{ hostvars[groups['k3s_server'][0]]['ansible_host'] }}"
+k3s_server_private_ip: "{{ hostvars[groups['k3s_server'][0]]['node_private_ip'] | default(k3s_server_ip) }}"
+k3s_extra_server_args: ""
+k3s_extra_agent_args: ""
+
+# Where kubectl/helm/kubernetes.core look for credentials on kube_control hosts.
+# For k3s this is the file k3s writes; for an existing cluster point it at your kubeconfig.
+kubeconfig_path: /etc/rancher/k3s/k3s.yaml
+helm_version: v3.16.2
+kubectl_version: v1.30.6            # only installed if kubectl is not already present
+k8s_venv: /opt/mds-k8s-venv         # python venv holding the `kubernetes` client for kubernetes.core
+
+# -----------------------------------------------------------------------------
+# Platform add-ons
+# -----------------------------------------------------------------------------
+ingress_nginx_chart_version: 4.11.3
+cert_manager_chart_version: v1.16.1
+acme_email: ""                      # optional: a real address gets Let's Encrypt expiry notices
+# letsencrypt-prod | letsencrypt-staging | selfsigned
+tls_cluster_issuer: letsencrypt-prod
+
+# -----------------------------------------------------------------------------
+# MDS application
+# -----------------------------------------------------------------------------
+# Set per environment in environments/<env>/main.yml:
+#   mds_environment, mds_namespace, mds_ui_host, mds_api_host, mds_minio_console_host
+mds_storage_class: local-path       # k3s default (install local-path-provisioner on RKE2). Use gp3 (EBS CSI), longhorn, etc. in production.
+# Namespace of the ingress controller pods, used by the NetworkPolicies.
+# ingress-nginx (playbook 02) = ingress-nginx; RKE2's bundled controller = kube-system.
+mds_ingress_controller_namespace: ingress-nginx
+# Extra CIDRs allowed to reach UI/API/mock-iam pods. Needed when the ingress controller
+# uses hostNetwork (RKE2 default): its traffic then comes from the node IPs, not a pod.
+mds_ingress_source_cidrs: []
+mds_expose_minio_console: false     # README: console is Admin/VPN only
+
+# Ingress protection. Standalone mode auto-logs everyone in as ADMIN, so restrict access.
+mds_ingress_allowlist_cidrs: []     # e.g. ["203.0.113.0/24"]; empty = no IP restriction
+mds_ingress_basic_auth_enabled: false
+mds_ingress_basic_auth_user: mds
+mds_ingress_proxy_body_size: 100m   # GeoJSON boundary uploads
+
+# --- Images: official OpenG2P builds (github.com/OpenG2P/master-data-service) ---
+# Only the rolling "develop" tag is published so far. Pin a release tag once one exists.
+mds_api_image: openg2p/master-data-api:develop
+mds_ui_image: openg2p/master-data-ui:develop
+mds_seed_image: openg2p/master-data-db-seed:develop    # country-pack loader (codelists + geography)
+mds_image_pull_policy: Always       # "develop" is a moving tag; use IfNotPresent once pinned
+mds_image_pull_secret: ""           # name of a docker-registry secret if images are private
+mds_postgres_image: postgres:16
+# MinIO no longer publishes public images (Docker Hub / quay.io pulls are denied).
+# pgsty/* are community builds of the same MinIO source, drop-in compatible.
+mds_minio_image: pgsty/minio:RELEASE.2026-08-04T00-00-00Z
+mds_mc_image: pgsty/mc:RELEASE.2026-09-16T00-00-00Z
+mds_node_image: node:20-alpine      # runs mock_iam.js sidecar
+mds_busybox_image: busybox:1.36
+
+# --- Container start commands -------------------------------------------------
+# Leave empty to keep each image's own CMD (the API's CMD runs the DB migration first).
+# The standalone hooks need no wrapper: sitecustomize.py loads via PYTHONPATH.
+mds_api_start_command: ""
+mds_ui_start_command: ""
+mds_api_workers: 2                  # Gunicorn workers per API pod (image default 8 is too heavy)
+
+# --- Auth mode ------------------------------------------------------------------
+# true  = Option A (standalone: sitecustomize.py auth bypass + mock IAM sidecar)
+# false = Option B (corporate Keycloak / OpenG2P IAM)
+mds_standalone_mode: true
+mds_require_hooks: true             # fail preflight if hook files are missing in standalone mode
+# Standalone login page. With vault_standalone_login_password set (environments/<env>/vault.yml)
+# the mock IAM shows a username/password form and the API only accepts that login's token.
+# Empty password = no login page: everyone is auto-logged in as admin.
+mds_standalone_login_username: admin
+mds_hooks_dir: "{{ playbook_dir }}/../files/mds-hooks"
+mds_catalog_scripts_dir: "{{ playbook_dir }}/../files/catalog-scripts"
+
+# Keycloak login (Option A with real users). Needs mds_standalone_mode: true (the hooks
+# do the work) and the shared Keycloak from playbook 05-keycloak.yml, run first.
+# The UI signs in through Keycloak (mock_iam.js as OIDC bridge); the API (sitecustomize.py)
+# verifies the Keycloak JWT. Users are real people, so the API's maker != checker rule
+# applies: whoever submits a draft cannot approve it. Set per environment:
+mds_keycloak_enabled: false
+mds_keycloak_realm: "mds-{{ mds_environment }}"
+mds_keycloak_public_url: ""                    # browser-facing Keycloak base URL, set per env
+mds_keycloak_internal_url: http://keycloak.keycloak.svc.cluster.local:8080
+mds_keycloak_issuer: "{{ mds_keycloak_public_url | regex_replace('/$', '') }}/realms/{{ mds_keycloak_realm }}"
+mds_keycloak_realm_internal_url: "{{ mds_keycloak_internal_url }}/realms/{{ mds_keycloak_realm }}"
+mds_keycloak_client_id_mds: master-data
+# Client roles of mds_keycloak_client_id_mds and the MDS permissions each one grants.
+mds_keycloak_roles:
+  MASTER_DATA_ADMIN: "Everything: create, edit, delete and approve/publish reference data and geography"
+  MASTER_DATA_MAKER: "Maker: create, edit and delete drafts, submit them for approval"
+  MASTER_DATA_CHECKER: "Checker: approve or reject submitted drafts and publish releases"
+mds_role_permissions:
+  MASTER_DATA_ADMIN: [referenceData:create, referenceData:edit, referenceData:delete, referenceData:publish,
+                      geo:create, geo:edit, geo:delete, geo:publish]
+  MASTER_DATA_MAKER: [referenceData:create, referenceData:edit, referenceData:delete,
+                      geo:create, geo:edit, geo:delete]
+  MASTER_DATA_CHECKER: [referenceData:publish, geo:publish]
+# Users created in every realm (initial passwords: Secret mds-keycloak-users in the env
+# namespace). Add people here, or in the Keycloak console (Users, then Role mapping >
+# Assign role > Filter by clients > master-data). Override per environment with the same name.
+mds_keycloak_users:
+  - { username: mds-admin, first_name: MDS, last_name: Admin, email: mds-admin@mds.local, roles: [MASTER_DATA_ADMIN] }
+  - { username: mds-maker, first_name: Catalogue, last_name: Maker, email: mds-maker@mds.local, roles: [MASTER_DATA_MAKER] }
+  - { username: mds-checker, first_name: Catalogue, last_name: Checker, email: mds-checker@mds.local, roles: [MASTER_DATA_CHECKER] }
+
+# Option B settings (ignored in standalone mode)
+mds_iam_url: https://iam.example.gov
+mds_login_provider_id: "1"
+mds_cookie_domain: "{{ mds_ui_host if mds_standalone_mode else '.example.gov' }}"
+mds_keycloak_client_id: iam-staff-portal
+
+# --- API settings ---------------------------------------------------------------
+mds_api_replicas: 2
+mds_api_csrf_enabled: "false"
+mds_api_public_catalogue_enabled: "true"
+mds_api_catalogue_approval_mode: permission
+mds_api_catalogue_country: ETH
+
+# Env var NAMES the API image expects for DB/MinIO (from the official chart).
+mds_api_db_env_names:
+  host: MASTER_DATA_API_DB_HOSTNAME
+  port: MASTER_DATA_API_DB_PORT
+  dbname: MASTER_DATA_API_DB_DBNAME
+  user: MASTER_DATA_API_DB_USERNAME
+  password: MASTER_DATA_API_DB_PASSWORD
+mds_api_minio_env_names:
+  endpoint: MASTER_DATA_API_BOUNDARY_S3_ENDPOINT
+  access_key: MASTER_DATA_API_BOUNDARY_S3_ACCESS_KEY
+  secret_key: MASTER_DATA_API_BOUNDARY_S3_SECRET_KEY
+  bucket: MASTER_DATA_API_BOUNDARY_S3_BUCKET
+
+# --- Catalog seeding (playbook 04, official country-pack loader) -----------------
+# Loads code lists + administrative geography from github.com/OpenG2P/openg2p-data packs.
+# First load of each list / the geography is published as v1; later runs with a changed
+# pack leave DRAFTs for approval (or publish at once with mds_seed_auto_publish - dev only).
+mds_seed_country_pack: ETH          # ETH (Ethiopia, CC BY-IGO attribution) or XKM (fictitious)
+mds_seed_domains: [agriculture]     # themes loaded with the core lists (crops, livestock, ...)
+mds_seed_load: [geo, codelists]     # add "samples" for demo people (not in production)
+mds_seed_publish_initial: true
+mds_seed_auto_publish: false
+mds_seed_owner_org: ""
+
+# Any other env from docker-compose.yml goes here (non-secret).
+mds_api_extra_env: {}
+mds_ui_extra_env: {}
+
+# --- UI settings ----------------------------------------------------------------
+mds_ui_replicas: 2
+
+# --- Resources ------------------------------------------------------------------
+mds_api_resources:
+  requests: { cpu: 250m, memory: 512Mi }
+  limits: { cpu: "1", memory: 1Gi }
+mds_ui_resources:
+  requests: { cpu: 100m, memory: 256Mi }
+  limits: { cpu: 500m, memory: 768Mi }
+mds_postgres_resources:
+  requests: { cpu: 250m, memory: 512Mi }
+  limits: { cpu: "1", memory: 2Gi }
+mds_minio_resources:
+  requests: { cpu: 100m, memory: 256Mi }
+  limits: { cpu: 500m, memory: 1Gi }
+mds_seed_resources:
+  requests: { cpu: 200m, memory: 256Mi }
+  limits: { cpu: "1", memory: 1Gi }
+
+# --- Autoscaling / availability -------------------------------------------------
+# API/UI rolling updates: zero-downtime by default (start the new pod before stopping the old).
+mds_rollout_max_unavailable: 0
+mds_rollout_max_surge: 1
+mds_hpa_enabled: true
+mds_api_hpa_max: 4
+mds_ui_hpa_max: 4
+mds_hpa_cpu_target: 75
+
+# --- Data -----------------------------------------------------------------------
+mds_postgres_db: master_data
+mds_postgres_user: postgres
+mds_postgres_storage: 20Gi
+mds_minio_bucket: openg2p-geo
+mds_minio_storage: 20Gi
+
+# --- Backups (CronJob inside the cluster) ---------------------------------------
+mds_backup_enabled: true
+mds_backup_schedule: "0 1 * * *"    # daily 01:00 UTC
+mds_backup_retention_days: 14
+mds_backup_storage: 50Gi
+# Optional off-cluster copy to any S3-compatible bucket (strongly recommended in production)
+mds_backup_remote_enabled: false
+mds_backup_remote_endpoint: https://s3.eu-west-1.amazonaws.com
+mds_backup_remote_bucket: my-org-mds-backups
+
+# Controller-side folder for ad-hoc backups pulled by playbooks/backup.yml
+mds_local_backup_dir: "{{ playbook_dir }}/../artifacts/backups/{{ mds_namespace }}"

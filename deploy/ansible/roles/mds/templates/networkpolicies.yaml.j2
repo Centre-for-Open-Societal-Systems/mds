@@ -1,0 +1,117 @@
+# Zero-trust ingress inside the namespace. Mirrors README section 6.1 exposure rules:
+# UI/API reachable via ingress only; PostgreSQL and MinIO are private.
+{% macro from_ingress() %}
+        - namespaceSelector:
+            matchLabels: { kubernetes.io/metadata.name: {{ mds_ingress_controller_namespace }} }
+{% for cidr in mds_ingress_source_cidrs %}
+        - ipBlock: { cidr: {{ cidr }} }
+{% endfor %}
+{%- endmacro %}
+---
+apiVersion: networking.k8s.io/v1
+kind: NetworkPolicy
+metadata:
+  name: default-deny-ingress
+  namespace: {{ mds_namespace }}
+spec:
+  podSelector: {}
+  policyTypes: [Ingress]
+---
+# cert-manager creates HTTP-01 solver pods in this namespace during certificate issuance.
+apiVersion: networking.k8s.io/v1
+kind: NetworkPolicy
+metadata:
+  name: allow-acme-solver-from-ingress
+  namespace: {{ mds_namespace }}
+spec:
+  podSelector:
+    matchLabels: { acme.cert-manager.io/http01-solver: "true" }
+  policyTypes: [Ingress]
+  ingress:
+    - from:
+{{ from_ingress() }}
+      ports:
+        - { port: 8089, protocol: TCP }
+---
+apiVersion: networking.k8s.io/v1
+kind: NetworkPolicy
+metadata:
+  name: allow-ui-from-ingress
+  namespace: {{ mds_namespace }}
+spec:
+  podSelector:
+    matchLabels: { app.kubernetes.io/name: mds-ui }
+  policyTypes: [Ingress]
+  ingress:
+    - from:
+{{ from_ingress() }}
+      ports:
+        - { port: 3000, protocol: TCP }
+{% if mds_standalone_mode %}
+        - { port: 8020, protocol: TCP }
+{% endif %}
+---
+apiVersion: networking.k8s.io/v1
+kind: NetworkPolicy
+metadata:
+  name: allow-api-from-ingress-and-ui
+  namespace: {{ mds_namespace }}
+spec:
+  podSelector:
+    matchLabels: { app.kubernetes.io/name: mds-api }
+  policyTypes: [Ingress]
+  ingress:
+    - from:
+{{ from_ingress() }}
+        - podSelector:
+            matchLabels: { app.kubernetes.io/name: mds-ui }
+      ports:
+        - { port: 8000, protocol: TCP }
+---
+apiVersion: networking.k8s.io/v1
+kind: NetworkPolicy
+metadata:
+  name: allow-postgres-from-api-seed-backup
+  namespace: {{ mds_namespace }}
+spec:
+  podSelector:
+    matchLabels: { app.kubernetes.io/name: mds-postgres }
+  policyTypes: [Ingress]
+  ingress:
+    - from:
+        - podSelector:
+            matchLabels: { app.kubernetes.io/name: mds-api }
+        - podSelector:
+            matchLabels: { app.kubernetes.io/name: mds-seed }
+        - podSelector:
+            matchLabels: { app.kubernetes.io/name: mds-backup }
+      ports:
+        - { port: 5432, protocol: TCP }
+---
+apiVersion: networking.k8s.io/v1
+kind: NetworkPolicy
+metadata:
+  name: allow-minio-from-api-init-seed-backup
+  namespace: {{ mds_namespace }}
+spec:
+  podSelector:
+    matchLabels: { app.kubernetes.io/name: mds-minio }
+  policyTypes: [Ingress]
+  ingress:
+    - from:
+        - podSelector:
+            matchLabels: { app.kubernetes.io/name: mds-api }
+        - podSelector:
+            matchLabels: { app.kubernetes.io/name: mds-minio-init }
+        - podSelector:
+            matchLabels: { app.kubernetes.io/name: mds-seed }
+        - podSelector:
+            matchLabels: { app.kubernetes.io/name: mds-backup }
+      ports:
+        - { port: 9000, protocol: TCP }
+{% if mds_expose_minio_console %}
+    - from:
+{{ from_ingress() }}
+      ports:
+        - { port: 9001, protocol: TCP }
+{% endif %}

@@ -1,0 +1,55 @@
+---
+# Prepares a kube_control host to drive the cluster: kubectl, helm and a python
+# venv with the `kubernetes` client used by the kubernetes.core collection.
+
+- name: Check for kubectl
+  ansible.builtin.stat:
+    path: /usr/local/bin/kubectl
+  register: kubectl_bin
+
+- name: Install kubectl (only if not provided by k3s)
+  ansible.builtin.get_url:
+    url: "https://dl.k8s.io/release/{{ kubectl_version }}/bin/linux/amd64/kubectl"
+    dest: /usr/local/bin/kubectl
+    mode: "0755"
+  when: not kubectl_bin.stat.exists
+
+- name: Check installed helm version
+  ansible.builtin.command: helm version --short
+  register: helm_installed
+  changed_when: false
+  failed_when: false
+
+- name: Install helm
+  when: helm_installed.rc != 0 or helm_version not in helm_installed.stdout
+  block:
+    - name: Download helm
+      ansible.builtin.unarchive:
+        src: "https://get.helm.sh/helm-{{ helm_version }}-linux-amd64.tar.gz"
+        dest: /tmp
+        remote_src: true
+
+    - name: Install helm binary
+      ansible.builtin.copy:
+        src: /tmp/linux-amd64/helm
+        dest: /usr/local/bin/helm
+        mode: "0755"
+        remote_src: true
+
+- name: Create python venv for kubernetes.core
+  ansible.builtin.pip:
+    name:
+      - kubernetes>=29.0.0
+      - PyYAML
+      - jsonpatch
+    virtualenv: "{{ k8s_venv }}"
+    virtualenv_command: python3 -m venv
+
+- name: Verify cluster access
+  ansible.builtin.command: kubectl --kubeconfig {{ kubeconfig_path }} get nodes -o wide
+  register: nodes
+  changed_when: false
+
+- name: Show nodes
+  ansible.builtin.debug:
+    var: nodes.stdout_lines

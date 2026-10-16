@@ -1,0 +1,18 @@
+---
+# DEVELOP secrets. Copy to vault.yml, set unique values, then encrypt:
+#   ansible-vault encrypt environments/develop/vault.yml
+# Generate values with:  openssl rand -base64 32
+# Use DIFFERENT values from staging.
+
+vault_postgres_password: "CHANGE_ME_develop_pg_password"
+vault_minio_root_user: "mds-dev-minio-admin"
+vault_minio_root_password: "CHANGE_ME_develop_minio_password"
+
+# Only used when mds_ingress_basic_auth_enabled: true
+vault_ingress_basic_auth_password: "CHANGE_ME_develop_basic_auth"
+
+# Standalone login page password (user mds_standalone_login_username). Empty = auto-login as admin.
+vault_standalone_login_password: ""
+
+# Only used when mds_standalone_mode: false (Keycloak / IAM)
+vault_keycloak_client_secret: ""
