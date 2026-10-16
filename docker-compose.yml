@@ -90,14 +90,14 @@ services:
       MASTER_DATA_API_CSRF_ENABLED: "false"
       # [LOCAL ONLY]: Points to host Redis on 6387.
       # On Server: Point to server Redis (e.g. redis://redis-service:6379/0).
-      MASTER_DATA_API_AUTH_REDIS_URL: "redis://host.docker.internal:6387/0"
-      COMMON_AUTH_REDIS_URL: "redis://host.docker.internal:6387/0"
+      MASTER_DATA_API_AUTH_REDIS_URL: "${MASTER_DATA_API_AUTH_REDIS_URL:-redis://host.docker.internal:6387/0}"
+      COMMON_AUTH_REDIS_URL: "${MASTER_DATA_API_AUTH_REDIS_URL:-redis://host.docker.internal:6387/0}"
       # [LOCAL ONLY]: Points to localhost:8020 via internal forwarder.
       # On Server: Set to server IAM URL (e.g. https://iam.oanstaging.com or http://iam-service:8000).
-      MASTER_DATA_API_AUTH_PROVIDER_API_URL: "http://localhost:8020"
-      MASTER_DATA_API_KEYCLOAK_CLIENT_ID: "farmer-registry-staff-portal"
-      COMMON_AUTH_PROVIDER_API_URL: "http://localhost:8020"
-      COMMON_KEYCLOAK_CLIENT_ID: "farmer-registry-staff-portal"
+      MASTER_DATA_API_AUTH_PROVIDER_API_URL: "${IAM_URL:-http://localhost:8020}"
+      MASTER_DATA_API_KEYCLOAK_CLIENT_ID: "${APPLICATION_MNEMONIC:-farmer-registry-staff-portal}"
+      COMMON_AUTH_PROVIDER_API_URL: "${IAM_URL:-http://localhost:8020}"
+      COMMON_KEYCLOAK_CLIENT_ID: "${APPLICATION_MNEMONIC:-farmer-registry-staff-portal}"
       COMMON_AUTH_VERIFY_SSL: "false"
       MASTER_DATA_API_AUTH_VERIFY_SSL: "false"
       MASTER_DATA_API_PUBLIC_CATALOGUE_ENABLED: "true"
@@ -156,11 +156,11 @@ services:
       HOSTNAME: "0.0.0.0"
       BACKEND_URL: "http://master-data-api:8000"
       # [LOCAL ONLY]: On server, point to server IAM (e.g. https://iam.oanstaging.com).
-      IAM_URL: "http://localhost:8020"
-      APPLICATION_MNEMONIC: "farmer-registry-staff-portal"
-      LOGIN_PROVIDER_ID: "1"
+      IAM_URL: "${IAM_URL:-http://localhost:8020}"
+      APPLICATION_MNEMONIC: "${APPLICATION_MNEMONIC:-farmer-registry-staff-portal}"
+      LOGIN_PROVIDER_ID: "${LOGIN_PROVIDER_ID:-1}"
       # [LOCAL ONLY]: On server, set to your domain (e.g. .oanstaging.com).
-      COOKIE_DOMAIN: "localhost"
+      COOKIE_DOMAIN: "${COOKIE_DOMAIN:-localhost}"
     ports:
       - "${MASTER_DATA_UI_PORT:-3005}:3000"
     restart: unless-stopped
