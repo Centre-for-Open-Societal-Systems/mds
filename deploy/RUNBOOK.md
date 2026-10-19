@@ -51,20 +51,20 @@ export MDS_ENV=develop     # or: export MDS_ENV=staging
 
 ### URLs
 
-Develop has public DNS: Route 53 A records `mds-dev.oanstaging.com` and `mds-api-dev.oanstaging.com` (zone `oanstaging.com`) -> `13.126.71.6`. Staging and Rancher still need this line in the hosts file of every client (`C:\Windows\System32\drivers\etc\hosts` on Windows, `/etc/hosts` on Linux/macOS). `*.mda.test` is not public DNS:
+Develop and staging have public DNS: Route 53 A records in zone `oanstaging.com` -> `13.126.71.6` (`mds-dev`, `mds-api-dev`, `keycloak-dev`, `mds-staging`, `mds-api-staging`, `keycloak-staging`), all with Let's Encrypt certificates. Staging moved from `*.mda.test` on 2026-10-19. Only Rancher still needs a hosts-file line (`C:\Windows\System32\drivers\etc\hosts` on Windows, `/etc/hosts` on Linux/macOS):
 
 ```
-13.126.71.6  rancher.mda.test mds-staging.mda.test mds-api-staging.mda.test keycloak.mda.test
+13.126.71.6  rancher.mda.test
 ```
 
 | What | Develop | Staging |
 |---|---|---|
-| Catalogue (UI) | https://mds-dev.oanstaging.com/en/datasets | https://mds-staging.mda.test/en/datasets |
-| UI home | https://mds-dev.oanstaging.com/en | https://mds-staging.mda.test/en |
-| One list (example) | https://mds-dev.oanstaging.com/en/datasets/CROP_CATALOG | https://mds-staging.mda.test/en/datasets/CROP_CATALOG |
-| API base | https://mds-api-dev.oanstaging.com | https://mds-api-staging.mda.test |
-| API docs (Swagger) | https://mds-api-dev.oanstaging.com/docs | https://mds-api-staging.mda.test/docs |
-| API health | https://mds-api-dev.oanstaging.com/ping | https://mds-api-staging.mda.test/ping |
+| Catalogue (UI) | https://mds-dev.oanstaging.com/en/datasets | https://mds-staging.oanstaging.com/en/datasets |
+| UI home | https://mds-dev.oanstaging.com/en | https://mds-staging.oanstaging.com/en |
+| One list (example) | https://mds-dev.oanstaging.com/en/datasets/CROP_CATALOG | https://mds-staging.oanstaging.com/en/datasets/CROP_CATALOG |
+| API base | https://mds-api-dev.oanstaging.com | https://mds-api-staging.oanstaging.com |
+| API docs (Swagger) | https://mds-api-dev.oanstaging.com/docs | https://mds-api-staging.oanstaging.com/docs |
+| API health | https://mds-api-dev.oanstaging.com/ping | https://mds-api-staging.oanstaging.com/ping |
 | Kubernetes namespace | `develop` | `staging` |
 
 Cluster management (Rancher): https://rancher.mda.test (user `admin`; the one-time bootstrap password is in `~/rancher-bootstrap-password` on the server).
@@ -78,7 +78,7 @@ One shared Keycloak (namespace `keycloak`, `quay.io/keycloak/keycloak:26.7.5` + 
 | | Develop | Staging |
 |---|---|---|
 | Realm | `mds-develop` | `mds-staging` |
-| Login page / issuer | https://keycloak-dev.oanstaging.com/realms/mds-develop | https://keycloak.mda.test/realms/mds-staging (hosts file) |
+| Login page / issuer | https://keycloak-dev.oanstaging.com/realms/mds-develop | https://keycloak-staging.oanstaging.com/realms/mds-staging |
 | Admin console (both realms) | https://keycloak-dev.oanstaging.com/admin/ (user `kc-admin`) | |
 | Client | `master-data` (confidential, secret in Secret `mds-keycloak`) | same |
 
