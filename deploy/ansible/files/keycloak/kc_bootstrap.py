@@ -9,7 +9,7 @@ KC_BOOTSTRAP_CONFIG environment variable (secrets stay out of argv):
   "admin_user": "...", "admin_password": "...",
   "realm": "mds-develop",
   "display_name": "MDS develop",
-  "frontend_url": "https://keycloak.mda.test",  # optional, per-realm public URL
+  "frontend_url": "https://keycloak-staging.oanstaging.com",  # optional, per-realm public URL
   "realm_settings": {...},                       # merged into the realm representation
   "client": {"client_id": "master-data", "secret": "...", "ui_url": "https://mds-dev..."},
   "roles": {"MASTER_DATA_ADMIN": "description", ...},

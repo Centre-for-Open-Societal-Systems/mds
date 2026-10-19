@@ -8,9 +8,9 @@
 keycloak_host: keycloak-dev.oanstaging.com
 keycloak_tls_cluster_issuer: letsencrypt-prod
 
-# Staging lives on *.mda.test (hosts file, self-signed), so its realm uses this name.
+# Public name of the staging realm (Route 53 A record -> the server).
 keycloak_extra_hosts:
-  - { host: keycloak.mda.test, tls_cluster_issuer: selfsigned }
+  - { host: keycloak-staging.oanstaging.com, tls_cluster_issuer: letsencrypt-prod }
 
 # Single-node RKE2: bundled ingress-nginx in kube-system with hostNetwork.
 keycloak_ingress_controller_namespace: kube-system
