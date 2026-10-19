@@ -3,7 +3,7 @@
 //
 // Branch -> environment on the MDS-dev-staging server (single-node RKE2):
 //   develop  -> namespace "develop"  https://mds-dev.oanstaging.com      (automatic)
-//   staging  -> namespace "staging"  https://mds-staging.oanstaging.com  (after approval)
+//   staging  -> namespace "staging"  https://mds-staging.oanstaging.com  (automatic)
 //   anything else (main, feature branches, PRs) -> lint only, nothing is built or deployed
 //
 // A deploy:
@@ -283,16 +283,6 @@ rollback = kubectl rollout undo of mds-api and mds-ui''')
                             rm -rf "$DOCKER_CONFIG"
                         '''
                     }
-                }
-            }
-        }
-
-        stage('Approve staging') {
-            when { expression { targetEnv() == 'staging' && mode() in ['deploy', 'rollback'] } }
-            steps {
-                timeout(time: 60, unit: 'MINUTES') {
-                    input message: "Run '${mode()}' on staging (${env.IMAGE_TAG ?: env.GIT_COMMIT?.take(8)})?",
-                          ok: "Yes, ${mode()} staging"
                 }
             }
         }
