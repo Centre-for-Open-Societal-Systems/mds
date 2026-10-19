@@ -1,0 +1,102 @@
+---
+- name: Preflight checks
+  ansible.builtin.import_tasks: preflight.yml
+
+- name: Namespace, secrets and config
+  kubernetes.core.k8s:
+    state: present
+    apply: true
+    template: "{{ item }}"
+  loop:
+    - namespace.yaml.j2
+    - secrets.yaml.j2
+    - configmaps.yaml.j2
+  no_log: "{{ item == 'secrets.yaml.j2' }}"
+
+- name: Data tier (PostgreSQL + MinIO)
+  kubernetes.core.k8s:
+    state: present
+    apply: true
+    template: "{{ item }}"
+  loop:
+    - postgres.yaml.j2
+    - minio.yaml.j2
+
+- name: Wait for PostgreSQL and MinIO to be ready
+  kubernetes.core.k8s_info:
+    kind: StatefulSet
+    namespace: "{{ mds_namespace }}"
+    name: "{{ item }}"
+  register: sts
+  until: >-
+    sts.resources | length > 0 and
+    (sts.resources[0].status.readyReplicas | default(0)) == sts.resources[0].spec.replicas
+  retries: 40
+  delay: 10
+  loop:
+    - mds-postgres
+    - mds-minio
+
+- name: Remove previous MinIO bucket-init job (jobs are immutable)
+  kubernetes.core.k8s:
+    state: absent
+    kind: Job
+    namespace: "{{ mds_namespace }}"
+    name: mds-minio-init
+    wait: true
+    delete_options:
+      propagationPolicy: Foreground
+
+- name: Create MinIO bucket ({{ mds_minio_bucket }})
+  kubernetes.core.k8s:
+    state: present
+    template: minio-init-job.yaml.j2
+    wait: true
+    wait_condition:
+      type: Complete
+      status: "True"
+    wait_timeout: 300
+
+- name: Application tier (API + UI)
+  kubernetes.core.k8s:
+    state: present
+    apply: true
+    template: "{{ item }}"
+  loop:
+    - api.yaml.j2
+    - ui.yaml.j2
+
+- name: Wait for API and UI rollouts
+  kubernetes.core.k8s_info:
+    kind: Deployment
+    namespace: "{{ mds_namespace }}"
+    name: "{{ item }}"
+  register: dep
+  until: >-
+    dep.resources | length > 0 and
+    (dep.resources[0].status.updatedReplicas | default(0)) == dep.resources[0].spec.replicas and
+    (dep.resources[0].status.availableReplicas | default(0)) == dep.resources[0].spec.replicas and
+    (dep.resources[0].status.unavailableReplicas | default(0)) == 0
+  retries: 60
+  delay: 10
+  loop:
+    - mds-api
+    - mds-ui
+
+- name: Ingress, autoscaling, network policies, backups
+  kubernetes.core.k8s:
+    state: present
+    apply: true
+    template: "{{ item }}"
+  loop: >-
+    {{ ['ingress.yaml.j2', 'networkpolicies.yaml.j2']
+       + (['availability.yaml.j2'] if (mds_hpa_enabled or mds_api_replicas | int > 1 or mds_ui_replicas | int > 1) else [])
+       + (['backup-cronjob.yaml.j2'] if mds_backup_enabled else []) }}
+
+- name: Remove backup CronJob when disabled
+  kubernetes.core.k8s:
+    state: absent
+    kind: CronJob
+    namespace: "{{ mds_namespace }}"
+    name: mds-backup
+  when: not mds_backup_enabled

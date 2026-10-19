@@ -1,0 +1,23 @@
+---
+# Shared Keycloak for the MDS environments: server + PostgreSQL in namespace "keycloak",
+# and for every environment with mds_keycloak_enabled: true a realm with the MDS client,
+# the maker-checker roles and the users in mds_keycloak_users.
+# Idempotent. Run it BEFORE 03-deploy-mds.yml, which needs the mds-keycloak Secret it creates.
+#
+# Usage: ansible-playbook playbooks/05-keycloak.yml
+#        ansible-playbook playbooks/05-keycloak.yml -e '{"keycloak_envs": ["develop"]}'
+- name: Deploy and configure Keycloak
+  hosts: kube_control[0]
+  become: true
+  gather_facts: false
+  vars:
+    ansible_python_interpreter: "{{ k8s_venv }}/bin/python"
+  environment:
+    K8S_AUTH_KUBECONFIG: "{{ kubeconfig_path }}"
+    KUBECONFIG: "{{ kubeconfig_path }}"
+  pre_tasks:
+    - name: Load Keycloak settings
+      ansible.builtin.include_vars:
+        file: "{{ playbook_dir }}/../environments/keycloak/main.yml"
+  roles:
+    - keycloak

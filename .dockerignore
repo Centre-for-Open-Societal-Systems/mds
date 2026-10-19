@@ -1,0 +1,3 @@
+# Only the sidebar hook is copied into an image; keep the build context small.
+*
+!customize_sidebar.js

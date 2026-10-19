@@ -1,0 +1,39 @@
+{% for app in [
+  {'name': 'mds-api', 'min': mds_api_replicas, 'max': mds_api_hpa_max},
+  {'name': 'mds-ui',  'min': mds_ui_replicas,  'max': mds_ui_hpa_max}
+] %}
+{% if mds_hpa_enabled %}
+---
+apiVersion: autoscaling/v2
+kind: HorizontalPodAutoscaler
+metadata:
+  name: {{ app.name }}
+  namespace: {{ mds_namespace }}
+spec:
+  scaleTargetRef:
+    apiVersion: apps/v1
+    kind: Deployment
+    name: {{ app.name }}
+  minReplicas: {{ app.min }}
+  maxReplicas: {{ app.max }}
+  metrics:
+    - type: Resource
+      resource:
+        name: cpu
+        target:
+          type: Utilization
+          averageUtilization: {{ mds_hpa_cpu_target }}
+{% endif %}
+{% if app.min | int > 1 %}
+---
+apiVersion: policy/v1
+kind: PodDisruptionBudget
+metadata:
+  name: {{ app.name }}
+  namespace: {{ mds_namespace }}
+spec:
+  minAvailable: 1
+  selector:
+    matchLabels: { app.kubernetes.io/name: {{ app.name }} }
+{% endif %}
+{% endfor %}

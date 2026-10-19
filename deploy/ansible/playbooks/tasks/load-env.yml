@@ -1,0 +1,23 @@
+---
+# Loads ansible/environments/<mds_env>/{main,vault}.yml.
+# include_vars has higher precedence than group_vars, so environment values win.
+- name: Require a target environment
+  ansible.builtin.assert:
+    that:
+      - mds_env is defined
+      - mds_env in mds_envs
+    fail_msg: "Pass -e mds_env=<env>, one of: {{ mds_envs | join(', ') }}"
+    quiet: true
+
+- name: Load {{ mds_env }} settings
+  ansible.builtin.include_vars:
+    file: "{{ playbook_dir }}/../environments/{{ mds_env }}/main.yml"
+
+- name: Load {{ mds_env }} secrets
+  ansible.builtin.include_vars:
+    file: "{{ playbook_dir }}/../environments/{{ mds_env }}/vault.yml"
+  no_log: true
+
+- name: Target
+  ansible.builtin.debug:
+    msg: "Environment {{ mds_env }} -> namespace {{ mds_namespace }} ({{ mds_ui_host }}, {{ mds_api_host }})"

@@ -1,0 +1,107 @@
+---
+# Secrets are generated on the first run and kept in Kubernetes Secrets afterwards,
+# so re-runs never rotate them (delete the Secret to rotate).
+- name: Read existing Keycloak secrets
+  kubernetes.core.k8s_info:
+    kind: Secret
+    namespace: "{{ keycloak_namespace }}"
+    name: "{{ item }}"
+  loop: [keycloak-admin, keycloak-postgres]
+  register: kc_existing
+  no_log: true
+
+- name: Reuse or generate Keycloak admin and database passwords
+  ansible.builtin.set_fact:
+    keycloak_admin_password: >-
+      {{ (kc_existing.results[0].resources[0].data.KC_BOOTSTRAP_ADMIN_PASSWORD | b64decode)
+         if kc_existing.results[0].resources | length > 0
+         else lookup('ansible.builtin.password', '/dev/null', length=24, chars=['ascii_letters', 'digits']) }}
+    keycloak_db_password: >-
+      {{ (kc_existing.results[1].resources[0].data.POSTGRES_PASSWORD | b64decode)
+         if kc_existing.results[1].resources | length > 0
+         else lookup('ansible.builtin.password', '/dev/null', length=32, chars=['ascii_letters', 'digits']) }}
+  no_log: true
+
+- name: Load MDS environment settings
+  ansible.builtin.include_vars:
+    file: "{{ playbook_dir }}/../environments/{{ item }}/main.yml"
+    name: "kc_env_{{ item }}"
+  loop: "{{ mds_envs }}"
+
+# The NetworkPolicy always admits every Keycloak-enabled environment, even when
+# keycloak_envs limits this run's realm setup to some of them.
+- name: MDS namespaces allowed to reach Keycloak
+  ansible.builtin.set_fact:
+    keycloak_mds_namespaces: "{{ keycloak_mds_namespaces | default([]) + [vars['kc_env_' ~ item].mds_namespace] }}"
+  loop: "{{ mds_envs }}"
+  when: vars['kc_env_' ~ item].mds_keycloak_enabled | default(false) | bool
+
+- name: Environments to configure in this run (mds_keycloak_enabled in environments/<env>/main.yml)
+  ansible.builtin.set_fact:
+    keycloak_enabled_envs: "{{ keycloak_enabled_envs | default([]) + [item] }}"
+  loop: "{{ keycloak_envs }}"
+  when: vars['kc_env_' ~ item].mds_keycloak_enabled | default(false) | bool
+
+- name: Require at least one environment
+  ansible.builtin.assert:
+    that: keycloak_enabled_envs | default([]) | length > 0
+    fail_msg: "Set mds_keycloak_enabled: true in environments/<env>/main.yml for at least one of {{ keycloak_envs }}."
+    quiet: true
+
+- name: Keycloak (namespace, secrets, PostgreSQL, server, ingress, network policies)
+  kubernetes.core.k8s:
+    state: present
+    apply: true
+    template: keycloak.yaml.j2
+  no_log: true
+
+- name: Wait for Keycloak PostgreSQL
+  kubernetes.core.k8s_info:
+    kind: StatefulSet
+    namespace: "{{ keycloak_namespace }}"
+    name: keycloak-postgres
+  register: kc_pg
+  until: >-
+    kc_pg.resources | length > 0 and
+    (kc_pg.resources[0].status.readyReplicas | default(0)) == 1
+  retries: 40
+  delay: 10
+
+- name: Wait for Keycloak to be ready (first start builds and migrates, ~2 min)
+  kubernetes.core.k8s_info:
+    kind: Deployment
+    namespace: "{{ keycloak_namespace }}"
+    name: keycloak
+  register: kc_dep
+  until: >-
+    kc_dep.resources | length > 0 and
+    (kc_dep.resources[0].status.availableReplicas | default(0)) == 1 and
+    (kc_dep.resources[0].status.updatedReplicas | default(0)) == 1 and
+    (kc_dep.resources[0].status.unavailableReplicas | default(0)) == 0
+  retries: 60
+  delay: 10
+
+- name: Find the Keycloak service address (Ansible runs on a cluster node)
+  kubernetes.core.k8s_info:
+    kind: Service
+    namespace: "{{ keycloak_namespace }}"
+    name: keycloak
+  register: kc_svc
+
+- name: Keycloak admin URL
+  ansible.builtin.set_fact:
+    keycloak_admin_api_url: "http://{{ kc_svc.resources[0].spec.clusterIP }}:8080"
+
+- name: Configure realm, client, roles and users per environment
+  ansible.builtin.include_tasks: realm.yml
+  loop: "{{ keycloak_enabled_envs }}"
+  loop_control:
+    loop_var: kc_env_name
+
+- name: Summary
+  ansible.builtin.debug:
+    msg:
+      - "Admin console: https://{{ keycloak_host }}/admin/  (user {{ keycloak_admin_user }})"
+      - "Admin password: kubectl -n {{ keycloak_namespace }} get secret keycloak-admin -o jsonpath='{.data.KC_BOOTSTRAP_ADMIN_PASSWORD}' | base64 -d"
+      - "Realms: {{ keycloak_realm_summary | default([]) }}"
+      - "User passwords: kubectl -n <env namespace> get secret mds-keycloak-users -o yaml"

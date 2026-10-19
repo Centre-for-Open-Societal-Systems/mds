@@ -1,0 +1,21 @@
+---
+- name: Install k3s server (control plane, includes kubectl)
+  hosts: k3s_server
+  become: true
+  gather_facts: true
+  roles:
+    - k3s_server
+
+- name: Join k3s agents (workers)
+  hosts: k3s_agents
+  become: true
+  gather_facts: true
+  roles:
+    - k3s_agent
+
+- name: Install kubectl / helm / python k8s client on control host
+  hosts: kube_control
+  become: true
+  gather_facts: true
+  roles:
+    - kube_tools

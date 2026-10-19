@@ -1,0 +1,91 @@
+---
+- name: Assert required images and start commands are set
+  ansible.builtin.assert:
+    that:
+      - mds_api_image | length > 0
+      - mds_ui_image | length > 0
+    fail_msg: Set mds_api_image and mds_ui_image in inventory/group_vars/all/main.yml.
+
+- name: Assert secrets are defined
+  ansible.builtin.assert:
+    that:
+      - vault_postgres_password is defined and vault_postgres_password | length >= 12
+      - vault_minio_root_user is defined and vault_minio_root_user | length >= 3
+      - vault_minio_root_password is defined and vault_minio_root_password | length >= 12
+    fail_msg: "Create and encrypt inventory/group_vars/all/vault.yml (see vault.yml.example)."
+  no_log: true
+
+- name: Assert no default passwords in production
+  ansible.builtin.assert:
+    that:
+      - "'CHANGE_ME' not in vault_postgres_password"
+      - "'CHANGE_ME' not in vault_minio_root_password"
+      - vault_minio_root_password != 'minioadmin'
+      - vault_postgres_password != 'password'
+      - tls_cluster_issuer != 'letsencrypt-staging'
+    fail_msg: "Production must not use default/placeholder passwords or the staging ACME issuer."
+  when: mds_environment == 'production'
+  no_log: true
+
+- name: Find standalone hook files
+  ansible.builtin.set_fact:
+    mds_hook_files: "{{ (query('ansible.builtin.fileglob', mds_hooks_dir ~ '/*.js') + query('ansible.builtin.fileglob', mds_hooks_dir ~ '/*.py')) | sort }}"
+
+- name: Load hook file contents
+  ansible.builtin.set_fact:
+    mds_hooks_data: "{{ mds_hooks_data | default({}) | combine({item | basename: lookup('ansible.builtin.file', item)}) }}"
+  loop: "{{ mds_hook_files }}"
+  loop_control:
+    label: "{{ item | basename }}"
+
+- name: Default hooks data when none found
+  ansible.builtin.set_fact:
+    mds_hooks_data: "{{ mds_hooks_data | default({}) }}"
+
+- name: Assert standalone hooks are present
+  ansible.builtin.assert:
+    that:
+      - "'mock_iam.js' in mds_hooks_data"
+      - "'sitecustomize.py' in mds_hooks_data"
+    fail_msg: >-
+      Standalone mode needs mock_iam.js and sitecustomize.py in {{ mds_hooks_dir }}.
+      Without them the UI cannot log in and the API returns 401.
+      Set mds_require_hooks=false to skip this check.
+  when: mds_standalone_mode and mds_require_hooks
+
+- name: Assert Keycloak login settings
+  ansible.builtin.assert:
+    that:
+      - mds_standalone_mode
+      - mds_keycloak_public_url | length > 0
+    fail_msg: >-
+      mds_keycloak_enabled needs mds_standalone_mode: true (the hooks do the Keycloak work)
+      and mds_keycloak_public_url in environments/{{ mds_environment }}/main.yml.
+  when: mds_keycloak_enabled
+
+- name: Look for the Keycloak client secret
+  kubernetes.core.k8s_info:
+    kind: Secret
+    namespace: "{{ mds_namespace }}"
+    name: mds-keycloak
+  register: mds_kc_secret
+  when: mds_keycloak_enabled
+  no_log: true
+
+- name: Assert playbook 05-keycloak.yml has run for this environment
+  ansible.builtin.assert:
+    that: mds_kc_secret.resources | length > 0
+    fail_msg: "Secret mds-keycloak is missing in {{ mds_namespace }}. Run playbooks/05-keycloak.yml first."
+  when: mds_keycloak_enabled
+
+- name: Summary
+  ansible.builtin.debug:
+    msg:
+      - "Environment:   {{ mds_environment }}"
+      - "Namespace:     {{ mds_namespace }}"
+      - >-
+        Auth mode:     {{ ('KEYCLOAK (' ~ mds_keycloak_issuer ~ ')') if (mds_standalone_mode and mds_keycloak_enabled)
+        else 'STANDALONE (auth disabled, mock IAM)' if mds_standalone_mode else 'IAM / Keycloak' }}
+      - "UI:            https://{{ mds_ui_host }}"
+      - "API:           https://{{ mds_api_host }}"
+      - "Hooks loaded:  {{ mds_hooks_data.keys() | list }}"

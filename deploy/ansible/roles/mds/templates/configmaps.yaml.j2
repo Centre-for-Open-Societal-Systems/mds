@@ -1,0 +1,88 @@
+---
+# Standalone startup hooks (patch_api.py, patch_ui.js, mock_iam.js, sidebar scripts).
+# Equivalent of the bind mounts in docker-compose.yml.
+apiVersion: v1
+kind: ConfigMap
+metadata:
+  name: mds-hooks
+  namespace: {{ mds_namespace }}
+data:
+{% if mds_hooks_data | length == 0 %}
+  .placeholder: ""
+{% endif %}
+{% for name, content in mds_hooks_data.items() %}
+  {{ name }}: |
+    {{ content | indent(4) }}
+{% endfor %}
+---
+apiVersion: v1
+kind: ConfigMap
+metadata:
+  name: mds-api-config
+  namespace: {{ mds_namespace }}
+data:
+  MASTER_DATA_API_AUTH_ENABLED: {{ ('false' if mds_standalone_mode else 'true') | to_json }}
+  MASTER_DATA_API_CSRF_ENABLED: {{ mds_api_csrf_enabled | string | to_json }}
+  MASTER_DATA_API_PUBLIC_CATALOGUE_ENABLED: {{ mds_api_public_catalogue_enabled | string | to_json }}
+  MASTER_DATA_API_CATALOGUE_APPROVAL_MODE: {{ mds_api_catalogue_approval_mode | to_json }}
+  MASTER_DATA_API_CATALOGUE_COUNTRY: {{ mds_api_catalogue_country | to_json }}
+  MASTER_DATA_API_HOST: "0.0.0.0"
+  MASTER_DATA_API_PORT: "8000"
+  MASTER_DATA_API_NO_OF_WORKERS: {{ mds_api_workers | string | to_json }}
+  MASTER_DATA_API_AUDIT_MANAGER_URL: ""
+  MASTER_DATA_API_KEYCLOAK_CLIENT_ID: {{ (mds_keycloak_client_id_mds if mds_standalone_mode else mds_keycloak_client_id) | to_json }}
+  {{ mds_api_db_env_names.host }}: "mds-postgres"
+  {{ mds_api_db_env_names.port }}: "5432"
+  # The DB engine (and migration) is built from openg2p-fastapi-common's settings,
+  # which read the COMMON_ prefix, not MASTER_DATA_API_. Without these it uses localhost.
+  COMMON_DB_HOSTNAME: "mds-postgres"
+  COMMON_DB_PORT: "5432"
+  {{ mds_api_minio_env_names.endpoint }}: "http://mds-minio:9000"
+  {{ mds_api_minio_env_names.bucket }}: {{ mds_minio_bucket | to_json }}
+{% if mds_standalone_mode %}
+  # Loads /opt/mds-hooks/sitecustomize.py (auth bypass) at Python start-up.
+  PYTHONPATH: "/opt/mds-hooks"
+  MDS_STANDALONE_AUTH: "true"
+{% if mds_keycloak_enabled %}
+  # sitecustomize.py verifies Keycloak JWTs instead of injecting an admin.
+  MDS_AUTH_MODE: "keycloak"
+  MDS_KEYCLOAK_ISSUER: {{ mds_keycloak_issuer | to_json }}
+  MDS_KEYCLOAK_JWKS_URL: {{ (mds_keycloak_realm_internal_url ~ '/protocol/openid-connect/certs') | to_json }}
+  MDS_KEYCLOAK_CLIENT_ID: {{ mds_keycloak_client_id_mds | to_json }}
+  MDS_ROLE_PERMISSIONS: {{ mds_role_permissions | to_json | to_json }}
+{% endif %}
+{% else %}
+  COMMON_AUTH_PROVIDER_API_URL: {{ mds_iam_url | to_json }}
+  MASTER_DATA_API_AUTH_PROVIDER_API_URL: {{ mds_iam_url | to_json }}
+{% endif %}
+{% for k, v in mds_api_extra_env.items() %}
+  {{ k }}: {{ v | string | to_json }}
+{% endfor %}
+---
+apiVersion: v1
+kind: ConfigMap
+metadata:
+  name: mds-ui-config
+  namespace: {{ mds_namespace }}
+data:
+  # In standalone mode IAM is the mock_iam.js sidecar in the same pod (localhost:8020).
+  IAM_URL: {{ ('http://localhost:8020' if mds_standalone_mode else mds_iam_url) | to_json }}
+  LOGIN_PROVIDER_ID: {{ mds_login_provider_id | string | to_json }}
+  # Standalone: host-only cookies (set by mock-iam on the UI host).
+  COOKIE_DOMAIN: {{ ('' if mds_standalone_mode else mds_cookie_domain) | to_json }}
+  BACKEND_URL: "http://mds-api:8000"
+  APPLICATION_MNEMONIC: "master-data"
+  DEFAULT_LOCALE: "en"
+  NODE_ENV: "production"
+  MOCK_IAM_PUBLIC_URL: "https://{{ mds_ui_host }}"
+{% if mds_standalone_mode and mds_keycloak_enabled %}
+  # mock_iam.js as OIDC bridge: browser -> issuer (public), code exchange/JWKS -> internal URL.
+  MDS_AUTH_MODE: "keycloak"
+  MDS_KEYCLOAK_ISSUER: {{ mds_keycloak_issuer | to_json }}
+  MDS_KEYCLOAK_INTERNAL_URL: {{ mds_keycloak_realm_internal_url | to_json }}
+  MDS_KEYCLOAK_CLIENT_ID: {{ mds_keycloak_client_id_mds | to_json }}
+  MDS_ROLE_PERMISSIONS: {{ mds_role_permissions | to_json | to_json }}
+{% endif %}
+{% for k, v in mds_ui_extra_env.items() %}
+  {{ k }}: {{ v | string | to_json }}
+{% endfor %}

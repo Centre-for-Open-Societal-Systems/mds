@@ -1,0 +1,86 @@
+---
+- name: Download k3s installer
+  ansible.builtin.get_url:
+    url: https://get.k3s.io
+    dest: /usr/local/bin/k3s-install.sh
+    mode: "0755"
+
+- name: Install k3s server
+  ansible.builtin.command: /usr/local/bin/k3s-install.sh
+  environment:
+    INSTALL_K3S_VERSION: "{{ k3s_version }}"
+    INSTALL_K3S_EXEC: >-
+      server
+      --disable traefik
+      --write-kubeconfig-mode 0640
+      --tls-san {{ k3s_server_ip }}
+      --tls-san {{ k3s_server_private_ip }}
+      --node-ip {{ node_private_ip | default(ansible_default_ipv4.address) }}
+      --secrets-encryption
+      {{ k3s_extra_server_args }}
+  args:
+    creates: /usr/local/bin/k3s
+
+- name: Wait for the Kubernetes API
+  ansible.builtin.wait_for:
+    port: 6443
+    host: 127.0.0.1
+    timeout: 300
+
+- name: Wait until node is Ready
+  ansible.builtin.command: k3s kubectl wait --for=condition=Ready node/{{ ansible_hostname }} --timeout=300s
+  changed_when: false
+
+- name: Read cluster join token
+  ansible.builtin.slurp:
+    src: /var/lib/rancher/k3s/server/node-token
+  register: k3s_token_raw
+  no_log: true
+
+- name: Store join token for agents
+  ansible.builtin.set_fact:
+    k3s_node_token: "{{ k3s_token_raw.content | b64decode | trim }}"
+  no_log: true
+
+- name: Give the SSH user kubectl access
+  block:
+    - name: Create ~/.kube
+      ansible.builtin.file:
+        path: "/home/{{ ansible_user }}/.kube"
+        state: directory
+        owner: "{{ ansible_user }}"
+        mode: "0700"
+
+    - name: Copy kubeconfig for the SSH user
+      ansible.builtin.copy:
+        src: /etc/rancher/k3s/k3s.yaml
+        dest: "/home/{{ ansible_user }}/.kube/config"
+        remote_src: true
+        owner: "{{ ansible_user }}"
+        mode: "0600"
+
+    - name: kubectl bash completion + alias
+      ansible.builtin.blockinfile:
+        path: "/home/{{ ansible_user }}/.bashrc"
+        marker: "# {mark} MDS kubectl"
+        block: |
+          export KUBECONFIG=$HOME/.kube/config
+          source <(kubectl completion bash)
+          alias k=kubectl
+          complete -o default -F __start_kubectl k
+          alias kdev='kubectl -n develop'
+          alias kstg='kubectl -n staging'
+
+- name: Fetch kubeconfig to the Ansible controller (artifacts/kubeconfig)
+  ansible.builtin.fetch:
+    src: /etc/rancher/k3s/k3s.yaml
+    dest: "{{ playbook_dir }}/../artifacts/kubeconfig"
+    flat: true
+
+- name: Point controller kubeconfig at the server's public IP
+  ansible.builtin.replace:
+    path: "{{ playbook_dir }}/../artifacts/kubeconfig"
+    regexp: 'https://127\.0\.0\.1:6443'
+    replace: "https://{{ k3s_server_ip }}:6443"
+  delegate_to: localhost
+  become: false

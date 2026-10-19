@@ -1,0 +1,19 @@
+---
+# =============================================================================
+# Shared Keycloak on the MDS-dev-staging server (playbook 05-keycloak.yml).
+# Overrides roles/keycloak/defaults/main.yml.
+# =============================================================================
+
+# Admin console + develop realm. Route 53 A record (zone oanstaging.com) -> the server.
+keycloak_host: keycloak-dev.oanstaging.com
+keycloak_tls_cluster_issuer: letsencrypt-prod
+
+# Public name of the staging realm (Route 53 A record -> the server).
+keycloak_extra_hosts:
+  - { host: keycloak-staging.oanstaging.com, tls_cluster_issuer: letsencrypt-prod }
+
+# Single-node RKE2: bundled ingress-nginx in kube-system with hostNetwork.
+keycloak_ingress_controller_namespace: kube-system
+keycloak_ingress_source_cidrs: ["10.0.1.0/24"]
+
+kubeconfig_path: /etc/rancher/rke2/rke2.yaml

@@ -1,0 +1,35 @@
+---
+# Run on its own (without 01) when targeting an EXISTING cluster: make sure
+# kube_control has kubectl/helm (role kube_tools) and kubeconfig_path is correct.
+- name: Ensure kube tooling on control host
+  hosts: kube_control[0]
+  become: true
+  gather_facts: true
+  roles:
+    - kube_tools
+
+- name: Install platform add-ons (ingress-nginx, cert-manager)
+  hosts: kube_control[0]
+  become: true
+  gather_facts: false
+  vars:
+    ansible_python_interpreter: "{{ k8s_venv }}/bin/python"
+  environment:
+    K8S_AUTH_KUBECONFIG: "{{ kubeconfig_path }}"
+    KUBECONFIG: "{{ kubeconfig_path }}"
+  roles:
+    - platform
+  post_tasks:
+    - name: Show ingress external address (point DNS here)
+      kubernetes.core.k8s_info:
+        kind: Service
+        namespace: ingress-nginx
+        name: ingress-nginx-controller
+      register: ingress_svc
+
+    - name: Ingress address
+      ansible.builtin.debug:
+        msg: >-
+          Ingress LoadBalancer address:
+          {{ ingress_svc.resources[0].status.loadBalancer.ingress | default([]) | map(attribute='ip', default='') | list }}
+          -> create DNS A records for {{ mds_ui_host }} and {{ mds_api_host }}.
