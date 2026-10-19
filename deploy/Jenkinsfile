@@ -29,8 +29,8 @@
 ENVS = [
     develop: [ui: 'mds-dev.oanstaging.com', api: 'mds-api-dev.oanstaging.com',
               keycloak: 'keycloak-dev.oanstaging.com', realm: 'mds-develop'],
-    staging: [ui: 'mds-staging.mda.test',   api: 'mds-api-staging.mda.test',
-              keycloak: 'keycloak.mda.test',           realm: 'mds-staging'],
+    staging: [ui: 'mds-staging.oanstaging.com', api: 'mds-api-staging.oanstaging.com',
+              keycloak: 'keycloak-staging.oanstaging.com', realm: 'mds-staging'],
 ]
 
 // Runs a bash script on the server inside the Ansible venv, from ~/MDS-service/ansible.
@@ -51,7 +51,7 @@ ${script}
 // Waits until the API /ping, the UI /en and the realm's OIDC discovery answer through
 // the ingress, then checks that login hands the browser to this environment's realm and
 // that the API refuses a request without a token.
-// --resolve pins the names to the server, so staging (*.mda.test) works without DNS.
+// --resolve pins the names to the server IP, so the check does not depend on DNS caches.
 def smokeTest(Map hosts) {
     sh """
         R="--resolve ${hosts.ui}:443:\$MDS_IP --resolve ${hosts.api}:443:\$MDS_IP --resolve ${hosts.keycloak}:443:\$MDS_IP"

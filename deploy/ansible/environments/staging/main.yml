@@ -10,14 +10,15 @@
 mds_environment: staging
 mds_namespace: staging
 
-# Hostnames -> ingress IP of the MDS-dev-staging server (13.126.71.6 public / 10.0.1.51 private).
-# *.mda.test is not public DNS: add these names (and keycloak.mda.test) to the hosts file of each client.
-mds_ui_host: mds-staging.mda.test
-mds_api_host: mds-api-staging.mda.test
-mds_minio_console_host: mds-minio-staging.mda.test
+# Hostnames: Route 53 A records (zone oanstaging.com) -> 13.126.71.6, the MDS-dev-staging server
+# (no Elastic IP: the public IP changes on every stop/start; update the records then).
+# (Was mds-staging.mda.test / mds-api-staging.mda.test via hosts files until 2026-10-19.)
+mds_ui_host: mds-staging.oanstaging.com
+mds_api_host: mds-api-staging.oanstaging.com
+mds_minio_console_host: mds-minio-staging.oanstaging.com
 
-# No public DNS -> self-signed certificates (browser warning is expected).
-tls_cluster_issuer: selfsigned
+# Public DNS (Route 53) -> trusted Let's Encrypt certificates (HTTP-01 via ingress-nginx, port 80).
+tls_cluster_issuer: letsencrypt-prod
 
 # Single-node RKE2: bundled ingress-nginx runs in kube-system with hostNetwork,
 # so its traffic reaches pods from the node subnet.
@@ -70,7 +71,7 @@ mds_ingress_basic_auth_enabled: false
 # Login through the shared Keycloak (playbook 05-keycloak.yml, realm mds-staging).
 # Users: mds-admin / mds-maker / mds-checker (initial passwords: Secret mds-keycloak-users).
 mds_keycloak_enabled: true
-mds_keycloak_public_url: https://keycloak.mda.test
+mds_keycloak_public_url: https://keycloak-staging.oanstaging.com
 
 # Cluster: single-node RKE2 on the MDS-dev-staging server (Ansible runs on that server).
 kubeconfig_path: /etc/rancher/rke2/rke2.yaml

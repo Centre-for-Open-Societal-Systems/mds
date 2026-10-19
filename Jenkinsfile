@@ -3,7 +3,7 @@
 //
 // Branch -> environment on the MDS-dev-staging server (single-node RKE2):
 //   develop  -> namespace "develop"  https://mds-dev.oanstaging.com      (automatic)
-//   staging  -> namespace "staging"  https://mds-staging.mda.test        (after approval)
+//   staging  -> namespace "staging"  https://mds-staging.oanstaging.com  (after approval)
 //   anything else (main, feature branches, PRs) -> lint only, nothing is built or deployed
 //
 // A deploy:
@@ -36,7 +36,7 @@
 BRANCH_ENV = [develop: 'develop', staging: 'staging']
 HOSTS = [
     develop: [ui: 'mds-dev.oanstaging.com', api: 'mds-api-dev.oanstaging.com'],
-    staging: [ui: 'mds-staging.mda.test',   api: 'mds-api-staging.mda.test'],
+    staging: [ui: 'mds-staging.oanstaging.com', api: 'mds-api-staging.oanstaging.com'],
 ]
 
 def targetEnv() {
@@ -139,7 +139,7 @@ def refreshPullSecret(String ns) {
 }
 
 // Waits until the API /ping and the UI /en answer through the ingress.
-// --resolve pins the names to the server, so staging (*.mda.test) works without DNS.
+// --resolve pins the names to the server IP, so the check does not depend on DNS caches.
 // The server IP is looked up from MDS_HOST each run (it changes when the EC2 instance restarts).
 def smokeTest(Map hosts) {
     sh """
