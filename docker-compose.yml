@@ -1,0 +1,170 @@
+version: "3.8"
+
+networks:
+  mds_net:
+    driver: bridge
+
+services:
+  postgres:
+    image: postgres:16
+    container_name: mds-standalone-postgres
+    networks:
+      - mds_net
+    environment:
+      POSTGRES_USER: ${POSTGRES_USER:-postgres}
+      POSTGRES_PASSWORD: ${POSTGRES_PASSWORD:-password}
+      POSTGRES_DB: ${POSTGRES_DB:-master_data}
+    ports:
+      - "${POSTGRES_PORT:-5434}:5432"
+    volumes:
+      - mds_pgdata:/var/lib/postgresql/data
+    healthcheck:
+      test: ["CMD-SHELL", "pg_isready -U postgres -d master_data"]
+      interval: 5s
+      timeout: 5s
+      retries: 10
+      start_period: 10s
+    restart: unless-stopped
+
+  minio:
+    image: minio/minio:latest
+    container_name: mds-standalone-minio
+    networks:
+      - mds_net
+    command: server /data --console-address ":9001"
+    environment:
+      MINIO_ROOT_USER: ${MINIO_ROOT_USER:-minioadmin}
+      MINIO_ROOT_PASSWORD: ${MINIO_ROOT_PASSWORD:-minioadmin}
+    ports:
+      - "${MINIO_API_PORT:-9010}:9000"
+      - "${MINIO_CONSOLE_PORT:-9011}:9001"
+    volumes:
+      - mds_miniodata:/data
+    restart: unless-stopped
+
+  minio-init:
+    image: minio/mc:latest
+    container_name: mds-standalone-minio-init
+    networks:
+      - mds_net
+    depends_on:
+      - minio
+    entrypoint: >
+      /bin/sh -c "
+      sleep 3;
+      /usr/bin/mc alias set local http://mds-standalone-minio:9000 minioadmin minioadmin;
+      /usr/bin/mc mb --ignore-existing local/openg2p-geo;
+      /usr/bin/mc anonymous set download local/openg2p-geo;
+      echo 'MinIO openg2p-geo bucket initialized successfully';
+      exit 0;
+      "
+    restart: "no"
+
+  master-data-api:
+    image: openg2p/master-data-api:develop
+    container_name: mds-standalone-api
+    networks:
+      - mds_net
+    # [LOCAL ONLY]: Allows container to reach host-running Keycloak/IAM/Redis.
+    # On Server/K8s: Omit extra_hosts and use cluster DNS or environment URLs.
+    extra_hosts:
+      - "host.docker.internal:host-gateway"
+    depends_on:
+      postgres:
+        condition: service_healthy
+      minio:
+        condition: service_started
+    environment:
+      MASTER_DATA_API_HOST: "0.0.0.0"
+      MASTER_DATA_API_PORT: 8000
+      MASTER_DATA_API_NO_OF_WORKERS: 2
+      MASTER_DATA_API_OPENAPI_ROOT_PATH: /
+      MASTER_DATA_API_WORKER_TYPE: gunicorn
+      MASTER_DATA_API_DB_DRIVER: postgresql+asyncpg
+      MASTER_DATA_API_DB_HOSTNAME: mds-standalone-postgres
+      MASTER_DATA_API_DB_PORT: 5432
+      MASTER_DATA_API_DB_USERNAME: ${POSTGRES_USER:-postgres}
+      MASTER_DATA_API_DB_PASSWORD: ${POSTGRES_PASSWORD:-password}
+      MASTER_DATA_API_DB_DBNAME: ${POSTGRES_DB:-master_data}
+      MASTER_DATA_API_AUTH_ENABLED: "true"
+      MASTER_DATA_API_CSRF_ENABLED: "false"
+      # [LOCAL ONLY]: Points to host Redis on 6387.
+      # On Server: Point to server Redis (e.g. redis://redis-service:6379/0).
+      MASTER_DATA_API_AUTH_REDIS_URL: "${MASTER_DATA_API_AUTH_REDIS_URL:-redis://host.docker.internal:6387/0}"
+      COMMON_AUTH_REDIS_URL: "${MASTER_DATA_API_AUTH_REDIS_URL:-redis://host.docker.internal:6387/0}"
+      # [LOCAL ONLY]: Points to localhost:8020 via internal forwarder.
+      # On Server: Set to server IAM URL (e.g. https://iam.oanstaging.com or http://iam-service:8000).
+      MASTER_DATA_API_AUTH_PROVIDER_API_URL: "${IAM_URL:-http://localhost:8020}"
+      MASTER_DATA_API_KEYCLOAK_CLIENT_ID: "${APPLICATION_MNEMONIC:-farmer-registry-staff-portal}"
+      COMMON_AUTH_PROVIDER_API_URL: "${IAM_URL:-http://localhost:8020}"
+      COMMON_KEYCLOAK_CLIENT_ID: "${APPLICATION_MNEMONIC:-farmer-registry-staff-portal}"
+      COMMON_AUTH_VERIFY_SSL: "false"
+      MASTER_DATA_API_AUTH_VERIFY_SSL: "false"
+      MASTER_DATA_API_PUBLIC_CATALOGUE_ENABLED: "true"
+      MASTER_DATA_API_CATALOGUE_APPROVAL_MODE: permission
+      MASTER_DATA_API_CATALOGUE_COUNTRY: ETH
+      MASTER_DATA_API_BOUNDARY_S3_ENDPOINT: "http://mds-standalone-minio:9000"
+      MASTER_DATA_API_BOUNDARY_S3_BUCKET: openg2p-geo
+      MASTER_DATA_API_BOUNDARY_S3_ACCESS_KEY: minioadmin
+      MASTER_DATA_API_BOUNDARY_S3_SECRET_KEY: minioadmin
+    volumes:
+      # [LOCAL ONLY]: TCP proxy forwarding localhost:8020/8080 to host machine.
+      # On Server: Omit volume mount when IAM_URL points to actual server endpoints.
+      - ./docker_proxy.py:/app/docker_proxy.py:ro
+    command:
+      - /bin/sh
+      - -c
+      - |
+        # [LOCAL ONLY]: Start forwarder; on server, run migrate and gunicorn directly.
+        python3 /app/docker_proxy.py &
+        python3 -m openg2p_gen2_master_data.main migrate
+        exec gunicorn "openg2p_gen2_master_data.main:app" --workers 2 --worker-class uvicorn.workers.UvicornWorker --bind 0.0.0.0:8000
+    ports:
+      - "${MASTER_DATA_API_PORT:-8044}:8000"
+    healthcheck:
+      test: ["CMD-SHELL", "python -c \"import urllib.request; urllib.request.urlopen('http://127.0.0.1:8000/ping')\""]
+      interval: 10s
+      timeout: 5s
+      retries: 12
+      start_period: 40s
+    restart: unless-stopped
+
+  master-data-ui:
+    image: openg2p/master-data-ui:develop
+    container_name: mds-standalone-ui
+    networks:
+      - mds_net
+    # [LOCAL ONLY]: Reach host Keycloak/IAM. Omit on server.
+    extra_hosts:
+      - "host.docker.internal:host-gateway"
+    depends_on:
+      master-data-api:
+        condition: service_healthy
+    volumes:
+      # [LOCAL ONLY]: Omit on server when IAM_URL points directly to server IAM.
+      - ./docker_proxy.js:/app/docker_proxy.js:ro
+      # [REQUIRED ON SERVER]: Customizes navigation with 5 base domains (Crops, Livestock, Seeds, Inputs, Geography).
+      - ./customize_sidebar.js:/app/customize_sidebar.js:ro
+    command: >
+      sh -c "
+      node /app/customize_sidebar.js;
+      node /app/docker_proxy.js &
+      exec node server.js
+      "
+    environment:
+      PORT: "3000"
+      HOSTNAME: "0.0.0.0"
+      BACKEND_URL: "http://master-data-api:8000"
+      # [LOCAL ONLY]: On server, point to server IAM (e.g. https://iam.oanstaging.com).
+      IAM_URL: "${IAM_URL:-http://localhost:8020}"
+      APPLICATION_MNEMONIC: "${APPLICATION_MNEMONIC:-farmer-registry-staff-portal}"
+      LOGIN_PROVIDER_ID: "${LOGIN_PROVIDER_ID:-1}"
+      # [LOCAL ONLY]: On server, set to your domain (e.g. .oanstaging.com).
+      COOKIE_DOMAIN: "${COOKIE_DOMAIN:-localhost}"
+    ports:
+      - "${MASTER_DATA_UI_PORT:-3005}:3000"
+    restart: unless-stopped
+
+volumes:
+  mds_pgdata:
+  mds_miniodata:
