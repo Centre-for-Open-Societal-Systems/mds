@@ -1,7 +1,7 @@
 "use client";
 
 import { useMemo, useState } from "react";
-import { ChevronRight, Edit3, Maximize2, Settings, Upload } from "lucide-react";
+import { ChevronLeft, ChevronRight, Edit3, Maximize2, Settings, Upload } from "lucide-react";
 import { useLocale, useTranslations } from "next-intl";
 import { toast } from "react-toastify";
 import Can from "@/components/Can";
@@ -302,38 +302,50 @@ export default function AttributeValuesView({
                 </div>
             </div>
 
-            {!editable && can(REFERENCE_DATA_ACTIONS.edit) ? (
-                <p className="rounded bg-gray-100 px-3 py-2 text-[13px] text-gray-700">
-                    {hasDraft ? t("cat_readonly_view_draft_hint") : t("cat_readonly_open_draft_hint")}
-                </p>
-            ) : null}
-
             <ErrorBox message={error} />
 
             {loading && allValues.length === 0 ? (
                 <TableSkeleton rows={10} columns={totalColumns} />
             ) : (
-                <div className="bg-white rounded-[10px] pt-4 pb-3 shadow-sm">
-                    {/* Top Pagination */}
+                <div className="bg-white rounded-[10px] pt-2 pb-3 shadow-sm">
+                    {/* Compact Top Pagination */}
                     {rows.length > PAGE_SIZE && (
-                        <div className="shrink-0 border-b border-gray-100 px-6 pb-3 mb-2 flex justify-end">
-                            <Pagination
-                                page={currentPage}
-                                pageSize={PAGE_SIZE}
-                                total={rows.length}
-                                onPageChange={setPage}
-                            />
+                        <div className="shrink-0 px-6 pb-2 flex justify-end items-center gap-3 text-[13px] text-gray-500">
+                            <span>
+                                {(currentPage - 1) * PAGE_SIZE + 1} - {Math.min(currentPage * PAGE_SIZE, rows.length)} of {rows.length}
+                            </span>
+                            <div className="flex items-center gap-1">
+                                <button
+                                    type="button"
+                                    disabled={currentPage <= 1}
+                                    onClick={() => setPage(currentPage - 1)}
+                                    className="p-1 rounded-md border border-gray-200 hover:bg-gray-100 text-gray-700 disabled:opacity-30 disabled:cursor-not-allowed cursor-pointer transition-colors"
+                                    aria-label="Previous page"
+                                >
+                                    <ChevronLeft size={15} />
+                                </button>
+                                <button
+                                    type="button"
+                                    disabled={currentPage >= Math.ceil(rows.length / PAGE_SIZE)}
+                                    onClick={() => setPage(currentPage + 1)}
+                                    className="p-1 rounded-md border border-gray-200 hover:bg-gray-100 text-gray-700 disabled:opacity-30 disabled:cursor-not-allowed cursor-pointer transition-colors"
+                                    aria-label="Next page"
+                                >
+                                    <ChevronRight size={15} />
+                                </button>
+                            </div>
                         </div>
                     )}
                     <div className="overflow-x-auto">
                         <table className="w-full min-w-full border-collapse bg-white table-auto">
                             <thead>
                                 <tr>
+                                    {/* 1. Small Elaborate Icon Column (First) */}
+                                    <th className={th} style={{ width: "40px", paddingLeft: "16px", paddingRight: "4px" }}></th>
                                     <th className={th} style={{ width: "50px" }}>{t("col_no")}</th>
-                                    <th className={th} style={{ minWidth: "120px" }}>{t("value_code")}</th>
-                                    <th className={th} style={{ minWidth: "160px" }}>{t("value_display")}</th>
-                                    <th className={th} style={{ width: "80px" }}>{t("sort_order")}</th>
-                                    <th className={th} style={{ width: "90px" }}>{t("col_status")}</th>
+                                    <th className={th} style={{ minWidth: "100px" }}>{t("value_code")}</th>
+                                    {/* Changed from 'Label' to 'Name' */}
+                                    <th className={th} style={{ minWidth: "160px" }}>Name</th>
 
                                     {/* Dynamic Columns for Schema Properties */}
                                     {schemaFields.length > 0 ? (
@@ -354,14 +366,15 @@ export default function AttributeValuesView({
                                         </th>
                                     )}
 
+                                    {/* Sort Order and Status moved to the end */}
+                                    <th className={th} style={{ width: "80px" }}>{t("sort_order")}</th>
+                                    <th className={th} style={{ width: "90px" }}>{t("col_status")}</th>
+
                                     {showActions ? (
                                         <th className={th} style={{ minWidth: "120px" }}>
                                             {t("col_actions")}
                                         </th>
                                     ) : null}
-                                    <th className={th} style={{ width: "70px", textAlign: "center" }}>
-                                        {t("col_details") || "Details"}
-                                    </th>
                                 </tr>
                             </thead>
                             <tbody>
@@ -387,6 +400,18 @@ export default function AttributeValuesView({
                                                 className={`transition-colors duration-150 ${isHierarchical && !searching ? "cursor-pointer" : ""} ${idx % 2 === 1 ? "bg-white" : "bg-gray-50"} hover:bg-gray-100 ${retired ? "text-gray-400" : ""}`}
                                                 onClick={() => handleDrillDown(item)}
                                             >
+                                                {/* Elaborate Details Button (First of Row) */}
+                                                <td className="py-2.5 pl-4 pr-1 align-middle text-center" onClick={(e) => e.stopPropagation()}>
+                                                    <button
+                                                        type="button"
+                                                        onClick={() => setDrawerValue(item)}
+                                                        title="View full entry details"
+                                                        className="p-1 rounded-md border border-gray-200 hover:bg-gray-100 text-gray-600 hover:text-black cursor-pointer transition-colors"
+                                                        aria-label="View full details"
+                                                    >
+                                                        <Maximize2 size={14} />
+                                                    </button>
+                                                </td>
                                                 <td className="py-2.5 px-6 align-top text-[15px] text-gray-500">
                                                     {String((currentPage - 1) * PAGE_SIZE + idx + 1).padStart(2, "0")}
                                                 </td>
@@ -413,10 +438,6 @@ export default function AttributeValuesView({
                                                         </div>
                                                     ) : null}
                                                 </td>
-                                                <td className="py-2.5 px-6 align-top text-[15px] text-gray-600">{item.sort_order ?? 0}</td>
-                                                <td className="py-2.5 px-6 align-top">
-                                                    <StatusBadge status={item.status} label={t(`cat_status_${item.status}`)} />
-                                                </td>
 
                                                 {/* Dynamic Field Values or Fallback Attribute Summary */}
                                                 {schemaFields.length > 0 ? (
@@ -429,11 +450,10 @@ export default function AttributeValuesView({
                                                             const certStr = String(val || "").toLowerCase();
                                                             const certified = certStr.includes("cert") && !certStr.includes("uncert");
                                                             content = (
-                                                                <span className={`inline-flex items-center px-2 py-0.5 rounded-full text-[12px] font-semibold border ${
-                                                                    certified
-                                                                        ? "bg-emerald-50 text-emerald-800 border-emerald-200"
-                                                                        : "bg-amber-50 text-amber-800 border-amber-200"
-                                                                }`}>
+                                                                <span className={`inline-flex items-center px-2 py-0.5 rounded-full text-[12px] font-semibold border ${certified
+                                                                    ? "bg-emerald-50 text-emerald-800 border-emerald-200"
+                                                                    : "bg-amber-50 text-amber-800 border-amber-200"
+                                                                    }`}>
                                                                     {certified ? "Certified" : "Uncertified"}
                                                                 </span>
                                                             );
@@ -473,6 +493,12 @@ export default function AttributeValuesView({
                                                     </td>
                                                 )}
 
+                                                {/* Sort Order and Status moved to the end */}
+                                                <td className="py-2.5 px-6 align-top text-[15px] text-gray-600">{item.sort_order ?? 0}</td>
+                                                <td className="py-2.5 px-6 align-top">
+                                                    <StatusBadge status={item.status} label={t(`cat_status_${item.status}`)} />
+                                                </td>
+
                                                 {showActions ? (
                                                     <td className="py-2 px-6 align-middle" onClick={(e) => e.stopPropagation()}>
                                                         <div className="flex flex-wrap items-center justify-start gap-2">
@@ -510,18 +536,6 @@ export default function AttributeValuesView({
                                                         </div>
                                                     </td>
                                                 ) : null}
-
-                                                {/* Details Drawer Button */}
-                                                <td className="py-2 px-3 align-middle text-center" onClick={(e) => e.stopPropagation()}>
-                                                    <button
-                                                        type="button"
-                                                        onClick={() => setDrawerValue(item)}
-                                                        title="View full entry details"
-                                                        className="inline-flex items-center justify-center p-1.5 rounded-lg border border-orange-200 bg-orange-50 text-[#ED7C22] hover:bg-orange-100 transition-colors cursor-pointer"
-                                                    >
-                                                        <Maximize2 size={16} />
-                                                    </button>
-                                                </td>
                                             </tr>
                                         );
                                     })
