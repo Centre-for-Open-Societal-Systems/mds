@@ -1,7 +1,7 @@
 "use client";
 
 import { useMemo, useState } from "react";
-import { ChevronRight, Maximize2, Upload } from "lucide-react";
+import { ChevronRight, Edit3, Maximize2, Settings, Upload } from "lucide-react";
 import { useLocale, useTranslations } from "next-intl";
 import { toast } from "react-toastify";
 import Can from "@/components/Can";
@@ -31,6 +31,7 @@ interface AttributeValuesViewProps {
     reloadNonce?: number;
     onChanged?: () => void;
     onEditCatalog?: () => void;
+    onEditSettings?: () => void;
 }
 
 const PAGE_SIZE = 10;
@@ -58,6 +59,7 @@ export default function AttributeValuesView({
     reloadNonce = 0,
     onChanged,
     onEditCatalog,
+    onEditSettings,
 }: AttributeValuesViewProps) {
     const t = useTranslations();
     const locale = useLocale();
@@ -239,6 +241,27 @@ export default function AttributeValuesView({
                     ) : null}
                 </div>
                 <div className="flex flex-wrap items-center gap-3">
+                    {onEditSettings && (
+                        <button
+                            type="button"
+                            onClick={onEditSettings}
+                            className="inline-flex items-center justify-center p-2 rounded-lg border border-gray-300 bg-white text-gray-700 hover:bg-gray-100 hover:text-black transition-colors cursor-pointer shadow-2xs"
+                            title={t("cat_edit_list") || "Catalog settings"}
+                            aria-label={t("cat_edit_list") || "Catalog settings"}
+                        >
+                            <Settings size={18} />
+                        </button>
+                    )}
+                    {onEditCatalog && (
+                        <button
+                            type="button"
+                            onClick={onEditCatalog}
+                            className="inline-flex items-center gap-1.5 px-3.5 py-2 text-[14px] font-semibold text-black bg-[#f4bb1b] hover:bg-[#e5ad10] rounded-lg transition-colors cursor-pointer shadow-2xs"
+                        >
+                            <Edit3 size={16} />
+                            <span>{t("cat_open_draft") || "Edit catalog"}</span>
+                        </button>
+                    )}
                     <label className="flex cursor-pointer items-center gap-2 text-[14px] text-gray-700">
                         <input
                             type="checkbox"

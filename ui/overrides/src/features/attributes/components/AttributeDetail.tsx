@@ -3,7 +3,7 @@
 import { useState } from "react";
 import { useLocale, useTranslations } from "next-intl";
 import { useRouter } from "@/i18n/navigation";
-import { ArrowLeft, Sparkles, CheckCircle, Clock } from "lucide-react";
+import { ArrowLeft, Sparkles, CheckCircle, Clock, Settings } from "lucide-react";
 import { toast } from "react-toastify";
 import Button from "@/components/Button";
 import TableSkeleton from "@/components/TableSkeleton";
@@ -30,7 +30,7 @@ interface AttributeDetailProps {
     attributeId: string;
 }
 
-type TabKey = "values" | "schema" | "history" | "diff" | "version";
+type TabKey = "values" | "schema" | "history" | "diff" | "details";
 
 /**
  * One catalog: version selector and badge, draft lifecycle, values (edited in the draft),
@@ -156,65 +156,7 @@ export default function AttributeDetail({ attributeId }: AttributeDetailProps) {
         <div className="space-y-4">
             {backBar(title)}
 
-            {/* Header row with catalog details and action buttons */}
-            <div className="flex flex-wrap items-start justify-between gap-4">
-                <div className="space-y-1 text-[14px] text-gray-600">
-                    <div>
-                        <span className="font-mono text-gray-800">{listCode}</span>
-                        {list.owner_org ? (
-                            <span>
-                                {" · "}
-                                {t("cat_owner_org")}: <span className="text-gray-800">{list.owner_org}</span>
-                            </span>
-                        ) : null}
-                        <span>
-                            {" · "}
-                            {t("cat_theme")}: <span className="text-gray-800">{themeLabel(themeKey(list), t)}</span>
-                        </span>
-                        {list.is_hierarchical ? <span>{` · ${t("is_hierarchical")}`}</span> : null}
-                    </div>
-                    <div className="flex flex-wrap items-center gap-2">
-                        <VisibilityBadge visibility={list.visibility} />
-                        <LicenceText uri={list.licence_uri} label={list.licence_label} />
-                    </div>
-                    {list.description ? <p className="max-w-3xl">{list.description}</p> : null}
-                    {list.display_i18n && Object.keys(list.display_i18n).length ? (
-                        <p className="text-[13px]">
-                            {Object.entries(list.display_i18n)
-                                .map(([l, v]) => `${l}: ${v}`)
-                                .join(" · ")}
-                        </p>
-                    ) : null}
-                </div>
-
-                {/* Requirement 12: Add Edit catalog button after catalog settings button in the same row */}
-                <div className="flex items-center gap-3">
-                    <Can action={REFERENCE_DATA_ACTIONS.edit}>
-                        <EditButton onClick={() => setEditOpen(true)}>{t("cat_edit_list")}</EditButton>
-                    </Can>
-                    {canEdit ? (
-                        !draft ? (
-                            <Button
-                                variant="warning"
-                                onClick={() => setOpenDraftDialog(true)}
-                                className="!bg-[#f4bb1b] !text-black font-semibold hover:!bg-[#e5ad10]"
-                            >
-                                {t("cat_open_draft")}
-                            </Button>
-                        ) : effectiveSelected !== "draft" ? (
-                            <Button
-                                variant="warning"
-                                onClick={() => setChosen("draft")}
-                                className="!bg-[#f4bb1b] !text-black font-semibold hover:!bg-[#e5ad10]"
-                            >
-                                {t("cat_open_draft")}
-                            </Button>
-                        ) : null
-                    ) : null}
-                </div>
-            </div>
-
-            {/* Requirement 11 & 13: Top version section ONLY shown for drafts. Hidden for published versions */}
+            {/* Top version section ONLY shown for drafts. Hidden for published versions */}
             {draft ? (
                 <VersionBar
                     versions={versions}
@@ -232,14 +174,14 @@ export default function AttributeDetail({ attributeId }: AttributeDetailProps) {
 
             <ErrorBox message={listQuery.error} />
 
-            {/* Requirement 11: Add Version tab after Compare versions */}
+            {/* Navigation Tabs */}
             <Tabs<TabKey>
                 tabs={[
                     { key: "values", label: t("cat_tab_values") },
                     { key: "schema", label: t("cat_tab_schema") },
                     { key: "history", label: t("cat_group_history") },
                     { key: "diff", label: t("cat_tab_diff") },
-                    { key: "version", label: t("cat_tab_version") || "Version" },
+                    { key: "details", label: t("cat_tab_details") || t("cat_details") || "Details" },
                 ]}
                 active={tab}
                 onChange={setTab}
@@ -254,7 +196,8 @@ export default function AttributeDetail({ attributeId }: AttributeDetailProps) {
                     hasDraft={Boolean(draft)}
                     reloadNonce={valuesNonce}
                     onChanged={() => versionsQuery.reload()}
-                    onEditCatalog={canEdit ? handleEditCatalog : undefined}
+                    onEditCatalog={canEdit && !editable ? handleEditCatalog : undefined}
+                    onEditSettings={canEdit ? () => setEditOpen(true) : undefined}
                 />
             ) : null}
 
@@ -292,60 +235,162 @@ export default function AttributeDetail({ attributeId }: AttributeDetailProps) {
                 </Panel>
             ) : null}
 
-            {/* Requirement 11 & 13: Version Tab showing full version section and lifecycle details */}
-            {tab === "version" ? (
+            {/* Details Tab: Catalog Metadata & Version Lifecycle */}
+            {tab === "details" ? (
                 <Panel>
                     <div className="space-y-6">
-                        <div className="border-b border-gray-100 pb-3">
-                            <h2 className="text-[18px] font-semibold text-black">{t("cat_tab_version") || "Version"}</h2>
-                            <p className="text-[13px] text-gray-500">
-                                View version status, manage approvals, and switch between published and draft versions.
-                            </p>
+                        {/* Catalog Details & Metadata Section */}
+                        <div>
+                            <div className="flex flex-wrap items-center justify-between gap-4 border-b border-gray-100 pb-3 mb-4">
+                                <div>
+                                    <h2 className="text-[18px] font-semibold text-black">
+                                        {title}
+                                    </h2>
+                                    <p className="text-[13px] text-gray-500 font-mono mt-0.5">
+                                        {listCode}
+                                    </p>
+                                </div>
+                                <div className="flex items-center gap-3">
+                                    <VisibilityBadge visibility={list.visibility} />
+                                    {list.is_hierarchical ? (
+                                        <span className="inline-flex items-center px-2.5 py-0.5 rounded-full text-xs font-medium bg-blue-100 text-blue-800">
+                                            {t("is_hierarchical")}
+                                        </span>
+                                    ) : null}
+                                    {canEdit ? (
+                                        <button
+                                            type="button"
+                                            onClick={() => setEditOpen(true)}
+                                            className="inline-flex items-center gap-1.5 px-3 py-1.5 rounded-lg border border-gray-300 text-gray-700 hover:bg-gray-100 text-[13px] font-medium transition-colors cursor-pointer"
+                                            title="Catalog settings"
+                                        >
+                                            <Settings size={15} />
+                                            <span>{t("cat_edit_list") || "Catalog settings"}</span>
+                                        </button>
+                                    ) : null}
+                                </div>
+                            </div>
+
+                            {/* Catalog Description */}
+                            {list.description ? (
+                                <div className="mb-6 p-4 bg-gray-50 rounded-lg border border-gray-200">
+                                    <div className="text-[12px] font-semibold text-gray-500 uppercase tracking-wider mb-1">
+                                        Description
+                                    </div>
+                                    <p className="text-[14px] text-gray-800 leading-relaxed whitespace-pre-wrap">
+                                        {list.description}
+                                    </p>
+                                </div>
+                            ) : null}
+
+                            {/* Metadata Grid */}
+                            <div className="grid grid-cols-1 sm:grid-cols-2 md:grid-cols-3 gap-4">
+                                <div className="p-3.5 bg-gray-50/50 rounded-lg border border-gray-200">
+                                    <div className="text-[12px] font-semibold text-gray-500 uppercase tracking-wider">
+                                        {t("cat_owner_org") || "Publisher"}
+                                    </div>
+                                    <div className="text-[14px] font-medium text-gray-900 mt-1">
+                                        {list.owner_org || "—"}
+                                    </div>
+                                </div>
+
+                                <div className="p-3.5 bg-gray-50/50 rounded-lg border border-gray-200">
+                                    <div className="text-[12px] font-semibold text-gray-500 uppercase tracking-wider">
+                                        {t("cat_theme") || "Theme / Group"}
+                                    </div>
+                                    <div className="text-[14px] font-medium text-gray-900 mt-1">
+                                        {themeLabel(themeKey(list), t) || "—"}
+                                    </div>
+                                </div>
+
+                                <div className="p-3.5 bg-gray-50/50 rounded-lg border border-gray-200">
+                                    <div className="text-[12px] font-semibold text-gray-500 uppercase tracking-wider">
+                                        Licence
+                                    </div>
+                                    <div className="text-[14px] font-medium text-gray-900 mt-1">
+                                        {list.licence_label || list.licence_uri ? (
+                                            <LicenceText uri={list.licence_uri} label={list.licence_label} />
+                                        ) : (
+                                            "—"
+                                        )}
+                                    </div>
+                                </div>
+                            </div>
+
+                            {/* Display i18n / Localized names if present */}
+                            {list.display_i18n && Object.keys(list.display_i18n).length ? (
+                                <div className="mt-4 p-3.5 bg-gray-50/50 rounded-lg border border-gray-200">
+                                    <div className="text-[12px] font-semibold text-gray-500 uppercase tracking-wider mb-1">
+                                        Localized Display Names
+                                    </div>
+                                    <div className="flex flex-wrap gap-2 mt-1">
+                                        {Object.entries(list.display_i18n).map(([lang, val]) => (
+                                            <span
+                                                key={lang}
+                                                className="inline-flex items-center gap-1.5 px-2.5 py-1 rounded bg-white border border-gray-200 text-gray-800 text-[13px]"
+                                            >
+                                                <span className="font-semibold uppercase text-[11px] text-gray-500">{lang}:</span>
+                                                <span>{val}</span>
+                                            </span>
+                                        ))}
+                                    </div>
+                                </div>
+                            ) : null}
                         </div>
 
-                        <VersionBar
-                            versions={versions}
-                            selected={effectiveSelected}
-                            onSelect={setChosen}
-                            shown={shown}
-                            subject={{ list_code: list.list_id }}
-                            ops={LIST_DRAFT_OPS}
-                            editPermission={REFERENCE_DATA_ACTIONS.edit}
-                            publishPermission={REFERENCE_DATA_ACTIONS.publish}
-                            approvalMode={config?.approval_mode}
-                            onChanged={reloadAll}
-                        />
-
-                        {/* Additional version summary information */}
-                        <div className="grid grid-cols-1 md:grid-cols-3 gap-4 pt-4 border-t border-gray-100">
-                            <div className="bg-gray-50 rounded-lg p-4 border border-gray-200">
-                                <div className="text-[12px] font-semibold text-gray-500 uppercase tracking-wider mb-1">
-                                    Current Viewing Version
-                                </div>
-                                <div className="text-[16px] font-bold text-gray-800">
-                                    {effectiveSelected === "draft"
-                                        ? `Draft v${draft?.version_no ?? ""}`
-                                        : shown
-                                          ? `v${shown.version_no} (${shown.status})`
-                                          : String(effectiveSelected)}
-                                </div>
+                        {/* Version Management Section */}
+                        <div className="pt-6 border-t border-gray-200">
+                            <div className="mb-4">
+                                <h3 className="text-[16px] font-semibold text-black">Version Management</h3>
+                                <p className="text-[13px] text-gray-500">
+                                    Manage versions, review drafts, and inspect lifecycle status.
+                                </p>
                             </div>
 
-                            <div className="bg-gray-50 rounded-lg p-4 border border-gray-200">
-                                <div className="text-[12px] font-semibold text-gray-500 uppercase tracking-wider mb-1">
-                                    Total Versions
-                                </div>
-                                <div className="text-[16px] font-bold text-gray-800">
-                                    {versions.length} {versions.length === 1 ? "version" : "versions"}
-                                </div>
-                            </div>
+                            <VersionBar
+                                versions={versions}
+                                selected={effectiveSelected}
+                                onSelect={setChosen}
+                                shown={shown}
+                                subject={{ list_code: list.list_id }}
+                                ops={LIST_DRAFT_OPS}
+                                editPermission={REFERENCE_DATA_ACTIONS.edit}
+                                publishPermission={REFERENCE_DATA_ACTIONS.publish}
+                                approvalMode={config?.approval_mode}
+                                onChanged={reloadAll}
+                            />
 
-                            <div className="bg-gray-50 rounded-lg p-4 border border-gray-200">
-                                <div className="text-[12px] font-semibold text-gray-500 uppercase tracking-wider mb-1">
-                                    Draft Status
+                            {/* Additional version summary information */}
+                            <div className="grid grid-cols-1 md:grid-cols-3 gap-4 pt-4">
+                                <div className="bg-gray-50 rounded-lg p-4 border border-gray-200">
+                                    <div className="text-[12px] font-semibold text-gray-500 uppercase tracking-wider mb-1">
+                                        Current Viewing Version
+                                    </div>
+                                    <div className="text-[16px] font-bold text-gray-800">
+                                        {effectiveSelected === "draft"
+                                            ? `Draft v${draft?.version_no ?? ""}`
+                                            : shown
+                                              ? `v${shown.version_no} (${shown.status})`
+                                              : String(effectiveSelected)}
+                                    </div>
                                 </div>
-                                <div className="text-[16px] font-bold text-gray-800">
-                                    {draft ? `Active (${draft.status})` : "No active draft"}
+
+                                <div className="bg-gray-50 rounded-lg p-4 border border-gray-200">
+                                    <div className="text-[12px] font-semibold text-gray-500 uppercase tracking-wider mb-1">
+                                        Total Versions
+                                    </div>
+                                    <div className="text-[16px] font-bold text-gray-800">
+                                        {versions.length} {versions.length === 1 ? "version" : "versions"}
+                                    </div>
+                                </div>
+
+                                <div className="bg-gray-50 rounded-lg p-4 border border-gray-200">
+                                    <div className="text-[12px] font-semibold text-gray-500 uppercase tracking-wider mb-1">
+                                        Draft Status
+                                    </div>
+                                    <div className="text-[16px] font-bold text-gray-800">
+                                        {draft ? `Active (${draft.status})` : "No active draft"}
+                                    </div>
                                 </div>
                             </div>
                         </div>
