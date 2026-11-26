@@ -31,25 +31,21 @@ export const GEO_ACTIONS = {
     publish: "geo:publish",
 };
 
-/** Top-level groups; Data has sub-tabs, Lineage shows two panels side by side, History merges versions and activity, Details holds metadata & version management. */
-type GroupKey = "data" | "lineage" | "history" | "details";
-type DataTabKey = "hierarchy" | "units" | "boundaries";
+/** Flat tabs: Hierarchy, Administrative units, Boundaries, Lineage, History, Details. */
+type TabKey = "hierarchy" | "units" | "boundaries" | "lineage" | "history" | "details";
 
 const EMPTY = {};
 
 /**
- * Geo Locations page: geography version selector and badge, draft lifecycle, and four groups:
- * Data (per version the hierarchy tree, a flat unit search and boundaries), Lineage (change events
- * and the crosswalk lookup side by side), History (version history, each version expanding to
- * its activity, plus the geography's full change feed) and Details (metadata & version management).
+ * Geo Locations page: geography version selector and badge, draft lifecycle, and flat tabs:
+ * Hierarchy, Administrative units, Boundaries, Lineage, History, and Details.
  */
 export default function GeoCatalogueView() {
     const t = useTranslations();
     const call = useCatalogueApi();
     const { can } = useRbac();
     const { config } = useCatalogueConfig();
-    const [group, setGroup] = useState<GroupKey>("data");
-    const [dataTab, setDataTab] = useState<DataTabKey>("hierarchy");
+    const [tab, setTab] = useState<TabKey>("hierarchy");
     const [chosen, setChosen] = useState<VersionRef | null>(null);
     const [includeRetired, setIncludeRetired] = useState(false);
     const [treeNonce, setTreeNonce] = useState(0);
@@ -113,20 +109,17 @@ export default function GeoCatalogueView() {
         }
     };
 
-    const groups = [
-        { key: "data" as const, label: t("cat_group_data") },
+    const boundariesEnabled = Boolean(config?.boundary_store_enabled);
+    const tabs = [
+        { key: "hierarchy" as const, label: t("cat_tab_hierarchy") },
+        { key: "units" as const, label: t("cat_tab_units") },
+        { key: "boundaries" as const, label: t("cat_tab_boundaries"), hidden: !boundariesEnabled },
         { key: "lineage" as const, label: t("cat_group_lineage") },
         { key: "history" as const, label: t("cat_group_history") },
         { key: "details" as const, label: t("cat_tab_details") || t("cat_details") || "Details" },
     ];
-    const boundariesEnabled = Boolean(config?.boundary_store_enabled);
-    const dataTabs = [
-        { key: "hierarchy" as const, label: t("cat_tab_hierarchy") },
-        { key: "units" as const, label: t("cat_tab_units") },
-        { key: "boundaries" as const, label: t("cat_tab_boundaries"), hidden: !boundariesEnabled },
-    ];
     // Boundaries can be hidden (boundary store disabled): fall back to the hierarchy.
-    const activeDataTab: DataTabKey = dataTab === "boundaries" && !boundariesEnabled ? "hierarchy" : dataTab;
+    const activeTab: TabKey = tab === "boundaries" && !boundariesEnabled ? "hierarchy" : tab;
 
     return (
         <div className="space-y-4">
@@ -166,63 +159,54 @@ export default function GeoCatalogueView() {
                 <p className="rounded bg-gray-100 px-3 py-2 text-[13px] text-gray-700">{t("cat_geo_empty")}</p>
             ) : null}
 
-            <Tabs<GroupKey> tabs={groups} active={group} onChange={setGroup} />
+            <Tabs<TabKey> tabs={tabs} active={activeTab} onChange={setTab} />
 
-            {group === "data" ? (
-                <div className="space-y-3">
-                    <Tabs<DataTabKey> tabs={dataTabs} active={activeDataTab} onChange={setDataTab} />
-                    {shown ? (
-                        <>
-                            {activeDataTab === "hierarchy" ? (
-                                <div className="space-y-2">
-                                    <div className="flex flex-wrap items-center gap-4">
-                                        <label className="flex cursor-pointer items-center gap-2 text-[14px] text-gray-700">
-                                            <input
-                                                type="checkbox"
-                                                checked={includeRetired}
-                                                onChange={(e) => setIncludeRetired(e.target.checked)}
-                                                className="h-4 w-4 accent-[#f4bb1b]"
-                                            />
-                                            {t("cat_include_retired")}
-                                        </label>
-                                    </div>
-                                    <GeoHierarchyExplorer
-                                        key={`${String(effective)}-${includeRetired}-${treeNonce}`}
-                                        version={effective}
-                                        editable={editable}
-                                        includeRetired={includeRetired}
-                                        embedded
-                                        onChanged={refreshMeta}
-                                        onEditCatalog={canEdit && !editable ? handleEditCatalog : undefined}
-                                        onEditSettings={canEdit ? () => setSettingsOpen(true) : undefined}
-                                    />
-                                </div>
-                            ) : null}
-
-                            {activeDataTab === "units" ? (
-                                <Panel>
-                                    <GeoUnitsBrowser
-                                        version={effective}
-                                        levels={levels}
-                                        editable={editable}
-                                        onChanged={refreshMeta}
-                                        onEditCatalog={canEdit && !editable ? handleEditCatalog : undefined}
-                                        onEditSettings={canEdit ? () => setSettingsOpen(true) : undefined}
-                                    />
-                                </Panel>
-                            ) : null}
-
-                            {activeDataTab === "boundaries" ? (
-                                <Panel>
-                                    <GeoBoundaries shown={shown} levels={levels} editable={editable} onChanged={refreshMeta} />
-                                </Panel>
-                            ) : null}
-                        </>
-                    ) : null}
+            {shown && activeTab === "hierarchy" ? (
+                <div className="space-y-2">
+                    <div className="flex flex-wrap items-center gap-4">
+                        <label className="flex cursor-pointer items-center gap-2 text-[14px] text-gray-700">
+                            <input
+                                type="checkbox"
+                                checked={includeRetired}
+                                onChange={(e) => setIncludeRetired(e.target.checked)}
+                                className="h-4 w-4 accent-[#f4bb1b]"
+                            />
+                            {t("cat_include_retired")}
+                        </label>
+                    </div>
+                    <GeoHierarchyExplorer
+                        key={`${String(effective)}-${includeRetired}-${treeNonce}`}
+                        version={effective}
+                        editable={editable}
+                        includeRetired={includeRetired}
+                        embedded
+                        onChanged={refreshMeta}
+                        onEditCatalog={canEdit && !editable ? handleEditCatalog : undefined}
+                        onEditSettings={canEdit ? () => setSettingsOpen(true) : undefined}
+                    />
                 </div>
             ) : null}
 
-            {group === "lineage" ? (
+            {shown && activeTab === "units" ? (
+                <Panel>
+                    <GeoUnitsBrowser
+                        version={effective}
+                        levels={levels}
+                        editable={editable}
+                        onChanged={refreshMeta}
+                        onEditCatalog={canEdit && !editable ? handleEditCatalog : undefined}
+                        onEditSettings={canEdit ? () => setSettingsOpen(true) : undefined}
+                    />
+                </Panel>
+            ) : null}
+
+            {shown && activeTab === "boundaries" ? (
+                <Panel>
+                    <GeoBoundaries shown={shown} levels={levels} editable={editable} onChanged={refreshMeta} />
+                </Panel>
+            ) : null}
+
+            {activeTab === "lineage" ? (
                 <div className="grid grid-cols-1 gap-4 xl:grid-cols-2">
                     {shown ? (
                         <Panel className="min-w-0 space-y-3">
@@ -237,7 +221,7 @@ export default function GeoCatalogueView() {
                 </div>
             ) : null}
 
-            {group === "history" ? (
+            {activeTab === "history" ? (
                 <VersionHistoryActivity
                     subjectType="geo"
                     versions={versions}
@@ -245,14 +229,13 @@ export default function GeoCatalogueView() {
                     extraCell={(v) => (v.unit_count != null ? String(v.unit_count) : "—")}
                     onView={(ref) => {
                         setChosen(ref);
-                        setGroup("data");
-                        setDataTab("hierarchy");
+                        setTab("hierarchy");
                     }}
                 />
             ) : null}
 
             {/* Details Tab: Geography Metadata & Version Management */}
-            {group === "details" ? (
+            {activeTab === "details" ? (
                 <Panel>
                     <div className="space-y-6">
                         {/* Geography Details & Metadata Section */}

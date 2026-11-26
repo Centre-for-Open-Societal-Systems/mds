@@ -231,6 +231,12 @@ To add a new catalog or lookup:
 2. Add its schema and metadata to `sync_client_catalogs.py` (specifying `table_type: "catalog"` or `"lookup"`).
 3. Re-run `docker exec -i coss-mds-api python3 < sync_client_catalogs.py`.
 
+### Geography Boundaries (MinIO & GeoJSON)
+Under **Geography → Boundaries**:
+- **Upload GeoJSON** is only shown when viewing an editable **Draft** version. Published versions are immutable.
+- **Download** only appears when a level has a GeoJSON object stored in MinIO (bucket `openg2p-geo`, e.g., `geo/ETH/v1/country.geojson`) and registered in `g2p_geo_versions.boundary_objects` / `boundary_checksums`. Levels with `No boundary` do not show a Download button.
+- Source GeoJSON files for Ethiopia (`country.geojson`, `region.geojson`, `zone.geojson`, `woreda.geojson`) are located in `../openg2p-data/packs/ETH/boundaries/`. To populate them, either upload each file through the UI in Draft mode and publish, or seed them into MinIO (`http://minio:9000` / `localhost:9010`) and update `g2p_geo_versions`.
+
 ---
 
 ## Troubleshooting
